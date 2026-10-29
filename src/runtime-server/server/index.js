@@ -197,6 +197,32 @@ function createApp(appConfig = {}) {
   app.use('/api/electron', createElectronRouter(vaultRegistry, appConfig.vaultPath));
   app.use('/api', createSystemPluginFilesRouter());
 
+  // ── /{VAULT_NAME} short links → /vault/{VAULT_NAME} ─────────────────────
+  // A bare single-segment GET path is a vault-name short link — redirect to
+  // the canonical /vault/<name> URL (boot.js reads the path there; the id
+  // stays visible/bookmarkable). Registered AFTER every real route above
+  // (/, /mobile, /starter, /vault/:id, the /api mounts, the root files), so
+  // those always win. Same rule as src/client-mobile/starter-url.js's
+  // shortPathSegment (the client-side twin, which covers the offline
+  // service-worker fallback) — keep the exclusions in sync: no dots (real
+  // files must keep 404-ing, not become vaults), no leading '.'/'_'/'~',
+  // reserved app routes/dirs (an unknown /api/... would otherwise fall
+  // through the routers to here), and the vault-name charset.
+  const RESERVED_ROOT_SEGMENTS = new Set([
+    'api', 'sync', 'starter', 'vault', 'mobile',
+    'client-mobile', 'obsidian-mobile', 'i18n', 'lib',
+    'public', 'sandbox', 'system-plugins', 'index',
+  ]);
+  const VAULT_SHORT_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
+  app.get('/:name', (req, res, next) => {
+    const name = req.params.name;
+    if (!name || name.includes('.') || RESERVED_ROOT_SEGMENTS.has(name.toLowerCase())
+      || '._~'.includes(name.charAt(0)) || !VAULT_SHORT_NAME_RE.test(name)) {
+      return next();
+    }
+    res.redirect(302, '/vault/' + encodeURIComponent(name));
+  });
+
   app.locals.vaultRegistry = vaultRegistry;
   return app;
 }

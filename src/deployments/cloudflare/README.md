@@ -8,7 +8,10 @@ previous server-side in-memory vault store (internally named `VaultDO`) has been
 
 ## What the Worker does now
 - Serves the **static app bundle** (`env.ASSETS`) for everything except
-  `/api/proxy-request` and the `/starter`/`/vault/*` SPA-fallback routes. See `index.js`.
+  `/api/proxy-request`, the `/starter`/`/vault/*` SPA-fallback routes, and
+  `/{VAULT_NAME}` short links - a bare single-segment GET (no dot, not a reserved
+  route) 302s to `/vault/{VAULT_NAME}` (same rule as `starter-url.js`, mirrored
+  client-side in boot.js for the offline service-worker fallback). See `index.js`.
 - `/` runs `boot.js`'s entry-routing first: if the browser already has a
   `mobile-selected-vault` from a previous visit, it **auto-resumes that vault**
   at `/vault/<id>` - a returning visitor's vault opens automatically, the chooser is
@@ -18,10 +21,12 @@ previous server-side in-memory vault store (internally named `VaultDO`) has been
   with `template.js`'s example content on first open, zero clicks. There is no
   visitor-facing "try the demo" button anymore (removed - the demo now has its own
   origin, so the button's original purpose of letting a *main-site* visitor reach the
-  demo no longer applies); on the clean/main profile `/starter` renders **Obsidian's
-  native mobile onboarding screen** ("Create a vault" / "Use my existing vault") with
-  no vault pre-opened and no demo trace. Vault creation/writes/reads happen **entirely
-  client-side** (OpfsStore engine); 0 dependency on `/api/*` for vault storage.
+  demo no longer applies); on the clean/main profile `/starter` renders a **minimal
+  "Enter URL" screen** - one input box, type a vault URL or name and go (boot.js's
+  `renderStarterScreen`; the Obsidian bundle never loads there, so the screen is
+  instant and offline-safe, and none of the native onboarding/storage-location UI is
+  shown). Vault creation/writes/reads happen **entirely client-side** (OpfsStore
+  engine); 0 dependency on `/api/*` for vault storage.
 - `vendor/obsidian-mobile/` is self-contained (own `app.js`/`worker.js`/`i18n`/
   `lib`) - `build-assets.sh` copies it (and mirrors its resource dirs at the
   bundle root) without touching `vendor/obsidian-desktop` (desktop).
@@ -83,15 +88,15 @@ Worker does now" above); the first time that vault is empty, it's seeded from
 `template.js`'s content changes on a later deploy (`window.__owDemoContent`
 hash). `Welcome.md` links back to
 the main deployment near the top of the note. On the main/default profile,
-none of this runs - a visitor gets Obsidian's plain native onboarding chooser,
+none of this runs - a visitor gets the minimal `/starter` "Enter URL" screen,
 with no vault pre-opened and no demo trace. Do **not** delete `template.js`.
 
 ## What's included (finished)
 - OPFS vault engine on the mobile runtime (create local vault, notes, nested
   folders, reload-persistence - all client-side, verified static/no-server).
-- Native mobile onboarding/vault-chooser screen renders fully at `/starter` (reached from
-  `/` when there's no remembered vault to auto-resume - see "What the Worker does now"
-  above).
+- Minimal "Enter URL" starter screen renders at `/starter` (reached from `/` when there's no
+  remembered vault to auto-resume - see "What the Worker does now" above). The native
+  Obsidian onboarding/vault-chooser and its storage-location UI are not shown anywhere.
 - Example vault + system-plugins seed to OPFS on first visit (`cf-mobile-seed`)
   - see "Example / demo vault content" above.
 - **`POST /api/proxy-request`** - edge Worker proxy (`cf-worker-proxy`) with

@@ -2,6 +2,13 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
   "outputDirectory": "public",
+  "redirects": [
+    {
+      "source": "/:name((?!api$|sync$|starter$|vault$|mobile$|client-mobile$|obsidian-mobile$|i18n$|lib$|public$|sandbox$|system-plugins$|index$)[A-Za-z0-9][A-Za-z0-9_-]{0,63})",
+      "destination": "/vault/:name",
+      "permanent": false
+    }
+  ],
   "rewrites": [
     { "source": "/sync/v1/:path*", "destination": "/api/sync/v1/:path*" },
     { "source": "/starter", "destination": "/" },

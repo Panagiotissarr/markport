@@ -20,6 +20,31 @@
 
 import { handleProxy } from './proxy-worker.js';
 
+// /{VAULT_NAME} short-link rule — mirror of src/client-mobile/starter-url.js's
+// shortPathSegment (the client-side twin, which covers the offline
+// service-worker fallback), the runtime-server's /:name route, and
+// vercel.json's redirect. Single segment, no dot (real files must keep
+// 404-ing through ASSETS, not become vaults), no leading '.'/'_'/'~', not a
+// reserved app route/asset dir, vault-name charset. The build only copies
+// this worker + proxy-worker.js into _worker.js/, so the helper is inline
+// here rather than imported — KEEP THE FOUR COPIES IN SYNC.
+const RESERVED_ROOT_SEGMENTS = ['api', 'sync', 'starter', 'vault', 'mobile',
+  'client-mobile', 'obsidian-mobile', 'i18n', 'lib', 'public', 'sandbox',
+  'system-plugins', 'index'];
+const VAULT_SHORT_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
+function vaultShortName(pathname) {
+  const m = pathname.match(/^\/([^/]+)\/?$/);
+  if (!m) return null;
+  let seg = m[1];
+  try { seg = decodeURIComponent(seg); } catch { return null; }
+  if (!seg || seg.includes('.')) return null;
+  const c0 = seg.charAt(0);
+  if (c0 === '.' || c0 === '_' || c0 === '~') return null;
+  if (RESERVED_ROOT_SEGMENTS.includes(seg.toLowerCase())) return null;
+  if (!VAULT_SHORT_NAME_RE.test(seg)) return null;
+  return seg;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -33,6 +58,16 @@ export default {
       // מחזיר את ה-shell כ-200; ה-URL בדפדפן נשאר /vault/<id> (זו לא הפניה, זה גוף),
       // ו-boot קורא את location.pathname האמיתי. (אומת ע"י אביגיל: 200, לא 307.)
       return env.ASSETS.fetch(new Request(new URL('/', url), request));
+    }
+    if (request.method === 'GET') {
+      // /{VAULT_NAME} → the canonical /vault/{VAULT_NAME} URL (302, not a
+      // shell-body serve: the redirect is one round-trip cheaper than
+      // booting the shell just to have boot.js location.replace it, and the
+      // browser URL ends up canonical either way).
+      const shortName = vaultShortName(url.pathname);
+      if (shortName) {
+        return Response.redirect(new URL('/vault/' + encodeURIComponent(shortName), url).href, 302);
+      }
     }
     // Everything else: the static app bundle. Vault storage is OPFS in the
     // browser, not the server.

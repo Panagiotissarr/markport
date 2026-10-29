@@ -123,18 +123,30 @@ token are then accepted by `requireAuth`:
 
 ### The browser flow
 
-1. Open `/vault/<name>` (SPA fallback → same app shell). During boot the
-   client fetches the vault's status and renders a **password gate** instead
-   of the usual "no backend" error.
+1. Open `/vault/<name>` — or just `/<name>`: a single-segment short link 302s
+   to `/vault/<name>` (`vercel.json` has the redirect; `scripts/dev.js` and
+   boot.js mirror it). During boot the client fetches the vault's status and
+   renders a **password gate** instead of the usual "no backend" error.
 2. Unclaimed: the typed password **claims** the vault. Claimed: it must
    **unlock** it (wrong password → stay on the gate with an error).
-3. Success stores `localStorage['ow-sync:<name>'] = {baseUrl, token, vault}`
-   and reloads — the vault then boots as a synced vault with the usual
-   file-explorer sync button.
-4. `/starter` joins in from the name field: a typed vault name is looked up
-   first — claimed → the gate; unclaimed → a password prompt claims it —
-   and only falls back to "create a local vault" when the name is empty or
-   not a valid vault id.
+3. Success stores the config **in `sessionStorage`** — the vault password is
+   *session-only*: it survives reloads and in-tab navigation, but closing the
+   tab/browser forgets it and the next visit asks for the password again. A
+   non-secret `localStorage['ow-sync-claimed:<name>']` marker remembers the
+   vault was claimed here, so returning visitors get a prefilled **Unlock**
+   prompt instead of a claim screen (one-time migration moves any pre-session
+   `localStorage['ow-sync:<name>']` config into sessionStorage). The client
+   reads session storage first and falls back to the manual
+   `localStorage['ow-sync:<vaultId>']` operator config, which still works.
+4. Unlock flows straight into a **startup sync**: pull+push runs *before*
+   Obsidian loads (pulled notes are visible immediately — no reload
+   round-trip), then edits **auto-push** in the background (~20 s debounce,
+   best-effort flush when the tab hides, retries with backoff). The manual
+   Push/Pull buttons stay in the file explorer.
+5. `/starter` is a **minimal "Enter URL" screen**: one input — type a vault
+   URL or name and go. A bare name opens `/vault/<name>` (gate/claim as
+   above; when this server has no claim endpoint, a same-name local vault can
+   be created inline). The Obsidian bundle never loads on `/starter`.
 
 ### The Obsidian plugin
 
@@ -171,6 +183,17 @@ this config exists — no config means no buttons and no network at all):
   explorer only shows pulled notes after a reload. Push never touches local
   files and never reloads.
 
+On top of the manual buttons, a claimed vault **syncs automatically**: the
+startup pull+push (see "The browser flow"), an auto-push ~20 s after the last
+edit, and a best-effort flush when the tab hides. Auto-pushes are silent;
+repeated failures surface as a throttled Notice. Pulling is never automatic
+while the app is running — OPFS writes outside Obsidian's adapter only show
+up after a reload, which would disrupt your work (that's what the startup
+sync is for). Every sync request retries transient failures (network errors,
+429/5xx) with exponential backoff + jitter, downloads run 4 blobs in
+parallel, and a partial pull keeps what arrived instead of failing the whole
+sync.
+
 Every click shows exactly one Notice with the result (or the failure's own
 message for 10 s); each request times out after 30 s so a stalled connection
 can never leave the spinner running. Every device using the same `vault`
@@ -195,7 +218,7 @@ or `_headers` (functions live in `api/`, headers in `vercel.json`).
 
 | File | Purpose |
 |------|---------|
-| `vercel.json` | rewrites: `/sync/v1/*` → functions, `/starter` + `/vault/*` → SPA fallback |
+| `vercel.json` | rewrites: `/sync/v1/*` → functions, `/starter` + `/vault/*` → SPA fallback; redirects: `/{VAULT_NAME}` short links → `/vault/{VAULT_NAME}` |
 | `lib/adapter.js` | Vercel `(req,res)` ⇄ web-standard `(Request)=>Response` bridge |
 | `lib/auth.js` | Bearer token check (sha-256 + constant-time compare, fail-closed); sets `request.vaultScope` for `mpv1.*` tokens |
 | `lib/claims.js` | password hashing (scrypt) + `mpv1.*` token issue/verify |

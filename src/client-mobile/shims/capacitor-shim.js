@@ -353,13 +353,13 @@
     async readdir(opts) {
       const p = fullPath(opts);
 
-      // opfs-ux: no vault active + browsing the External/root — this is the
-      // native mobile-vault-chooser-screen's supplemental "show subfolders
-      // not already in the vault list" scan (readdir(External,"") — brief
-      // §0 spike, gap 2). We have no real "device filesystem" to browse; a
-      // plain round-trip would hit whatever vault the server treats as
-      // default and show ITS subdirectories as fake vaults. Return empty —
-      // seedNativeVaultList()/Lte (mobile-external-vaults) is the real list.
+      // opfs-ux: no vault active + browsing the External/root — a leftover of
+      // the old native vault-chooser's supplemental "show subfolders not
+      // already in the vault list" scan (readdir(External,"")). We have no
+      // real "device filesystem" to browse; a plain round-trip would hit
+      // whatever vault the server treats as default and show ITS
+      // subdirectories as fake vaults. Return empty — the app never scans
+      // device storage (the minimal starter screen offers no such option).
       if (!getVaultId() && p === '') {
         return { files: [] };
       }

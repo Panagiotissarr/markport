@@ -43,9 +43,15 @@
   // command). `vault` (optional) scopes the request on multi-vault servers;
   // omitted → the server's default vault. Kept identical to run-sync.js's
   // copy — change them together.
+  // SESSION-FIRST: password-claimed vaults keep their mpv1 token in
+  // sessionStorage (boot.js's saveClaimedVault — "forget the password when
+  // the page is closed"); manual operator configs (a raw SYNC_TOKEN typed
+  // into localStorage, per the READMEs) keep working through the fallback.
   function getSyncConfig(vaultId) {
     try {
-      var raw = localStorage.getItem(configKeyFor(vaultId));
+      var raw = null;
+      try { raw = sessionStorage.getItem(configKeyFor(vaultId)); } catch (_) { }
+      if (!raw) raw = localStorage.getItem(configKeyFor(vaultId));
       if (!raw) return null;
       var parsed = JSON.parse(raw);
       if (!parsed || !parsed.baseUrl || !parsed.token) return null;

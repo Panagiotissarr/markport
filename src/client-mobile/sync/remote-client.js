@@ -82,12 +82,14 @@
   // spinner turning forever. AbortSignal.timeout is widely available; where
   // it isn't, fetch proceeds unbounded (status quo) rather than break.
   var REQ_TIMEOUT_MS = 30000;
-  function fetchReq(url, opts) {
-    if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
-      opts = opts || {};
-      if (!opts.signal) opts.signal = AbortSignal.timeout(REQ_TIMEOUT_MS);
+  function fetchOnce(url, opts) {
+    var o = opts ? Object.assign({}, opts) : {};
+    if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout && !o.signal) {
+      // Fresh signal PER ATTEMPT — a reused opts object would otherwise
+      // carry an already-aborted signal into every retry (instant failure).
+      o.signal = AbortSignal.timeout(REQ_TIMEOUT_MS);
     }
-    return fetch(url, opts).catch(function (e) {
+    return fetch(url, o).catch(function (e) {
       if (e && (e.name === 'AbortError' || e.code === 20)) {
         var t = new Error('request timed out after ' + Math.round(REQ_TIMEOUT_MS / 1000) + 's');
         t.code = 'ETIMEOUT';
@@ -95,6 +97,53 @@
       }
       throw e;
     });
+  }
+
+  // ── retries with exponential backoff ("sync sometimes fails" fix) ────────
+  // Transient failures get up to MAX_ATTEMPTS tries: network-level fetch
+  // rejections (TypeError — DNS, connection reset, offline blips, cold
+  // serverless functions), timeouts (ETIMEOUT), and 429/5xx responses.
+  // Deterministic 4xx (401 auth, 404, 409 hash-mismatch, 422 missing-blobs)
+  // are NOT retried — the callers below branch on exactly those statuses.
+  // The LAST attempt's response is returned as-is, so every status-handling
+  // branch in the protocol functions stays unchanged. Retries are safe:
+  // bodies are plain JSON strings (re-sendable), blob PUTs are idempotent
+  // per chunk (content-addressed), and commit is CAS-guarded server-side
+  // (a replayed commit either applies once or reports conflicts — never
+  // corrupts).
+  var MAX_ATTEMPTS = 3;
+  var RETRY_BASE_MS = 400;
+  var RETRYABLE_STATUS = { 429: true, 500: true, 502: true, 503: true, 504: true };
+  function isTransientFetchError(e) {
+    if (!e) return false;
+    if (e.code === 'ETIMEOUT') return true;
+    // TypeError is what fetch throws for network-level failures.
+    return (typeof TypeError !== 'undefined' && e instanceof TypeError) || e.name === 'TypeError';
+  }
+  function backoffMs(retryIndex) {
+    var base = RETRY_BASE_MS * Math.pow(2, retryIndex);            // 400, 800
+    return Math.round(base * (0.7 + Math.random() * 0.6));         // ±30% jitter
+  }
+  function fetchReq(url, opts) {
+    var attempt = 0;
+    function tryOnce() {
+      return fetchOnce(url, opts).then(function (res) {
+        if (RETRYABLE_STATUS[res.status] && attempt + 1 < MAX_ATTEMPTS) {
+          attempt++;
+          console.warn('[ow-sync] HTTP ' + res.status + ' — retry ' + attempt + '/' + (MAX_ATTEMPTS - 1) + ': ' + url);
+          return new Promise(function (r) { setTimeout(r, backoffMs(attempt - 1)); }).then(tryOnce);
+        }
+        return res;
+      }).catch(function (e) {
+        if (isTransientFetchError(e) && attempt + 1 < MAX_ATTEMPTS) {
+          attempt++;
+          console.warn('[ow-sync] ' + ((e && e.message) || e) + ' — retry ' + attempt + '/' + (MAX_ATTEMPTS - 1) + ': ' + url);
+          return new Promise(function (r) { setTimeout(r, backoffMs(attempt - 1)); }).then(tryOnce);
+        }
+        throw e;
+      });
+    }
+    return tryOnce();
   }
 
   // baseUrl + token (+ optional vault) — per-vault config (brief §3ה,
