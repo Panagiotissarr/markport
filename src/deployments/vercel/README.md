@@ -154,9 +154,10 @@ token are then accepted by `requireAuth`:
 Obsidian: paste the claimed `/vault/<name>` URL into its **Vault URL** field,
 enter the password and press **Connect** (the same claim/unlock endpoint — a
 password set in one client unlocks the vault in the other), then **Sync now**
-(pull + push) or **Pull** (download-only). Prebuilt downloads are attached to
-the repo's GitHub releases (`neon-sync-v*`; the loose `main.js` /
-`manifest.json` release assets also work with BRAT on mobile). See its README.
+(pull + push) or **Pull** (download-only). Prebuilt zip:
+`src/neon-sync-plugin/release/`; changelog: the repo's GitHub releases
+(`neon-sync-v*`). See its README for install options (including BRAT on
+mobile).
 
 ## Point a device at it
 

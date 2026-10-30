@@ -28,27 +28,35 @@ same CAS/conflict semantics.
 
 ### Download
 
-Prebuilt copies are attached to the repo's **GitHub releases** (tag
-`neon-sync-v*`): grab `markport-neon-sync-<version>.zip` — or the loose
-`main.js` + `manifest.json` release assets, which also let the
-[BRAT](https://github.com/TfTHacker/obsidian42-brat) plugin install and update
-this plugin straight from GitHub (*Add beta plugin* → `Panagiotissarr/obby-v2`;
-BRAT is the easiest route on **mobile**). Files can equally be copied from
-this directory after a checkout.
+Everything needed lives in this directory — `main.js` + `manifest.json` —
+plus a ready-to-extract
+[release/markport-neon-sync-0.2.0.zip](release/markport-neon-sync-0.2.0.zip)
+committed alongside (rebuild any time with
+`zip -j release/markport-neon-sync-0.2.0.zip main.js manifest.json README.md`).
+On GitHub, open a file and use **Download raw file**; the `neon-sync-v*`
+releases carry each version's changelog. If a release also has the loose
+`main.js` / `manifest.json` attached as assets (`gh release upload
+neon-sync-v0.2.0 src/neon-sync-plugin/main.js src/neon-sync-plugin/manifest.json`
+from your own machine — the build sandbox can't reach GitHub's upload
+endpoint), the [BRAT](https://github.com/TfTHacker/obsidian42-brat) plugin can
+install and update straight from it (*Add beta plugin* →
+`Panagiotissarr/obby-v2`) — the easiest route on **mobile**.
 
 ### Desktop
 
 1. Create the plugin folder in your vault:
    `<vault>/.obsidian/plugins/markport-neon-sync/`
-2. Put `main.js` and `manifest.json` into it (from a release zip, or from this
-   directory after checkout).
+2. Put `main.js` and `manifest.json` into it (extract the zip from
+   `release/`, download the raw files from GitHub, or copy them from this
+   directory after a checkout).
 3. Obsidian → Settings → Community plugins → enable **Markport Neon Sync**.
    ("Restricted mode" must be off.)
 
 ### Mobile
 
 1. Get the same two files into `<vault>/.obsidian/plugins/markport-neon-sync/`
-   — via **BRAT** (above), a cloud-synced vault, cable copy, or the files app
+   — via **BRAT** (needs the release assets attached — see above), a
+   cloud-synced vault, cable copy, or the files app
    (Android; on iOS the vault must live in the Files app, e.g. "On My
    iPhone"), **or** install once on desktop and sync the vault over first.
 2. Open Obsidian → Settings → Community plugins → enable **Markport Neon
