@@ -336,7 +336,9 @@ tab/browser forgets it and the next visit asks again (a non-secret localStorage 
 the prompt prefilled as "Unlock"). Unlock then runs a **startup sync** before Obsidian loads,
 and edits **auto-push** in the background afterwards. The same claim/unlock endpoint backs
 `src/neon-sync-plugin/`, an Obsidian plugin (desktop **and** mobile) that syncs a real
-Obsidian vault against the same server-side vault. Manual `localStorage` config with the
+Obsidian vault against the same server-side vault - paste the claimed `/vault/<name>` URL
+into its settings and press Connect; prebuilt downloads are attached to the repo's GitHub
+releases (`neon-sync-v*`). Manual `localStorage` config with the
 operator's `SYNC_TOKEN` still works (the client reads sessionStorage first, then
 localStorage). Full setup, claim-flow details, Vercel's 4.5 MB chunking story, and the
 conflict rules: `src/deployments/vercel/README.md`.
