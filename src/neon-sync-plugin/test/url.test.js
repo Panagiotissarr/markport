@@ -63,13 +63,19 @@ test('relative forms fill the vault name only', () => {
   assert.deepEqual(parseVaultUrl('vault/myvault'), { ok: true, baseUrl: null, vault: 'myvault' });
 });
 
-test('scheme-less host is assumed https', () => {
+test('scheme-less host: https for public hosts, http for local/dev hosts', () => {
   assert.deepEqual(parseVaultUrl('notes.sarris.dev/vault/myvault'),
     { ok: true, baseUrl: ORIGIN, vault: 'myvault' });
   assert.deepEqual(parseVaultUrl('notes.sarris.dev/myvault'),
     { ok: true, baseUrl: ORIGIN, vault: 'myvault' });
+  // Plain-HTTP dev servers must NOT get an https:// origin — that handshake
+  // fails with ERR_SSL_VERSION_OR_CIPHER_MISMATCH.
   assert.deepEqual(parseVaultUrl('localhost:3000/vault/x'),
-    { ok: true, baseUrl: 'https://localhost:3000', vault: 'x' });
+    { ok: true, baseUrl: 'http://localhost:3000', vault: 'x' });
+  assert.deepEqual(parseVaultUrl('127.0.0.1:3000/vault/x'),
+    { ok: true, baseUrl: 'http://127.0.0.1:3000', vault: 'x' });
+  assert.deepEqual(parseVaultUrl('192.168.1.50/vault/x'),
+    { ok: true, baseUrl: 'http://192.168.1.50', vault: 'x' });
 });
 
 test('explicit schemes, ports and casing survive', () => {

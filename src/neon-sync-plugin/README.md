@@ -30,13 +30,13 @@ same CAS/conflict semantics.
 
 Everything needed lives in this directory — `main.js` + `manifest.json` —
 plus a ready-to-extract
-[release/markport-neon-sync-0.2.0.zip](release/markport-neon-sync-0.2.0.zip)
+[release/markport-neon-sync-0.2.1.zip](release/markport-neon-sync-0.2.1.zip)
 committed alongside (rebuild any time with
-`zip -j release/markport-neon-sync-0.2.0.zip main.js manifest.json README.md`).
+`zip -j release/markport-neon-sync-0.2.1.zip main.js manifest.json README.md`).
 On GitHub, open a file and use **Download raw file**; the `neon-sync-v*`
 releases carry each version's changelog. If a release also has the loose
 `main.js` / `manifest.json` attached as assets (`gh release upload
-neon-sync-v0.2.0 src/neon-sync-plugin/main.js src/neon-sync-plugin/manifest.json`
+neon-sync-v0.2.1 src/neon-sync-plugin/main.js src/neon-sync-plugin/manifest.json`
 from your own machine — the build sandbox can't reach GitHub's upload
 endpoint), the [BRAT](https://github.com/TfTHacker/obsidian42-brat) plugin can
 install and update straight from it (*Add beta plugin* →
@@ -67,12 +67,13 @@ install and update straight from it (*Add beta plugin* →
 
 | Setting | Meaning |
 |---|---|
-| **Vault URL** | Paste your claimed link — `https://app/vault/<name>`, the short `https://app/<name>`, a note deep link, or a bare `<name>` — and **Server URL** + **Vault name** fill in automatically (a bare/relative name fills only the vault name). Scheme-less hosts are assumed `https://` |
+| **Vault URL** | Paste your claimed link — `https://app/vault/<name>`, the short `https://app/<name>`, a note deep link, or a bare `<name>` — and **Server URL** + **Vault name** fill in automatically (a bare/relative name fills only the vault name). Scheme-less hosts are assumed `https://`, except local/dev hosts (`localhost`, `127.*`, `192.168.*`, `10.*`, `172.16–31.*`, `*.local`) which are assumed `http://` — dev servers don't speak TLS |
 | **Server URL** | Origin of the deployment, e.g. `https://notes.sarris.dev` (no trailing path) |
 | **Vault name** | The vault id on the server — the same name used in `/vault/<name>` links (`a-z 0-9 . _ -`, ≤ 64 chars) |
 | **Password** | Claim/unlock password for that vault. Stored in the plugin's `data.json` so the token can refresh itself |
 | **Token** | Advanced: paste a bearer token directly (an `mpv1.*` vault token or the operator's `SYNC_TOKEN`). **Connect** overwrites it |
-| **Status** | **Check** — reads `GET /sync/v1/vaults/<name>` (is the vault claimed? is the stored token still valid?). **Connect** — exchanges the password for a fresh token. **Sync now** — runs one bidirectional sync. **Pull** — download-only run (never pushes) |
+| **Status** | Live state line: the configured vault/server + what to do next ("no token — press Connect") |
+| **Connect / Check / Sync now / Pull only** | One settings row per action, each with a single button (a shared row of buttons can clip off-screen on mobile): **Connect** exchanges the password for a fresh token (claims the vault if unclaimed), **Check** reads `GET /sync/v1/vaults/<name>`, **Sync now** runs one bidirectional sync, **Pull** is download-only. All three main actions are also in the command palette: *Connect / unlock vault*, *Sync now*, *Pull only* |
 | **Auto-sync interval** | Minutes between automatic syncs; `0` = manual only (command palette `Sync now` / `Pull only`, ribbon icon, or the settings buttons) |
 
 ### First run
@@ -146,13 +147,42 @@ the server still has unchanged is simply re-downloaded.
 - Conflict summary: after each sync a notice shows `↓ downloaded ↑ pushed
   deletions N · conflicts M`.
 
+## Troubleshooting
+
+- **"Press Connect" but no button / no plugin settings** — the two files must
+  sit directly in `<vault>/.obsidian/plugins/<folder>/` (extracting the zip at
+  the vault root installs nothing — a giveaway is `README.md` showing up as a
+  note in your vault). Restricted mode must be off and the plugin toggled on
+  under Community plugins; its settings page is at the very bottom of the
+  Settings sidebar (or the gear icon next to the plugin). Since v0.2.1 every
+  action has its **own settings row** (four buttons sharing one row could
+  clip off-screen, especially on mobile) and Connect/Sync/Pull are also in
+  the **command palette**.
+- **`ERR_SSL_VERSION_OR_CIPHER_MISMATCH` (or another SSL/cert error)** — the
+  plugin attempted an HTTPS handshake against a plain-HTTP server. The local
+  dev servers (runtime-server, `npm run dev`) listen on
+  `http://localhost:3000`: use `http://`. Since v0.2.1 local hosts
+  (`localhost`, `127.*`, `192.168.*`, `10.*`, `172.16–31.*`, `*.local`) are
+  assumed `http://` automatically — but an explicit `https://` in Server URL
+  / data.json always wins, so fix it there. (Against a real deployment like
+  `https://<app>.vercel.app` this error instead means the hostname doesn't
+  serve TLS — check it for typos.)
+- **Hand-edited `data.json`** — lives at
+  `<vault>/.obsidian/plugins/markport-neon-sync/data.json`; shape:
+  `{"baseUrl":"http://localhost:3000","vault":"myvault","password":"…","token":"","intervalMinutes":0,"synced":{},"mirror":{}}`.
+  Settings load at plugin startup: reload Obsidian (or toggle the plugin
+  off/on) after editing. Since v0.2.1 a missing scheme or trailing slashes in
+  `baseUrl` normalize on load instead of failing deep inside the request.
+
 ## Tests
 
 ```bash
 cd src/neon-sync-plugin
-node --test "test/*.test.js"     # 35 tests: decision table + helpers + URL parsing
+node --test "test/*.test.js"     # 41 tests: decision table + helpers + URL parsing + settings render
 ```
 
 The pure functions are attached to the exported class as statics so they run
 under plain Node — `require('obsidian')` is guarded and falls back to stubs
-outside Obsidian.
+outside Obsidian. `test/settings.test.js` goes further: it hooks
+`Module._load` with faithful Obsidian API stubs and actually renders the
+settings tab, so a missing/clipped button fails the suite.

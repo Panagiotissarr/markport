@@ -208,9 +208,44 @@ function isInternalPath(path) {
   return false;
 }
 
+// Host of a "host[:port]" string (bracketed IPv6 handled).
+function hostOf(hostPort) {
+  var hp = String(hostPort === null || hostPort === undefined ? '' : hostPort);
+  if (hp.charAt(0) === '[') {
+    var end = hp.indexOf(']');
+    return end === -1 ? hp : hp.slice(1, end);
+  }
+  return hp.split(':')[0];
+}
+
+// Local/dev hostnames: plain HTTP is the overwhelming default for these
+// (runtime-server and vercel dev.js both listen on http://localhost:3000).
+// Sending https:// at a non-TLS port fails the handshake with exactly the
+// error users otherwise see: ERR_SSL_VERSION_OR_CIPHER_MISMATCH.
+function isLocalHostName(host) {
+  var h = String(host === null || host === undefined ? '' : host).toLowerCase();
+  if (h === 'localhost' || h === '::1') return true;
+  if (/^127\./.test(h)) return true;
+  if (/^192\.168\./.test(h)) return true;
+  if (/^10\./.test(h)) return true;
+  if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(h)) return true;
+  if (/\.local(host)?$/.test(h)) return true;
+  return false;
+}
+
+// Trim + strip trailing slashes + supply a scheme when missing: http:// for
+// local/dev hosts, https:// otherwise. Explicit schemes are kept verbatim,
+// so hand-edited data.json values ("localhost:3000/") become usable origins
+// instead of dying inside requestUrl.
+function normalizeBaseUrl(raw) {
+  var s = String(raw === null || raw === undefined ? '' : raw).trim().replace(/\/+$/, '');
+  if (!s) return '';
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) return s;
+  return (isLocalHostName(hostOf(s.split('/')[0])) ? 'http://' : 'https://') + s;
+}
+
 function joinUrl(baseUrl, path) {
-  var base = String(baseUrl || '').replace(/\/+$/, '');
-  return base + path;
+  return normalizeBaseUrl(baseUrl) + path;
 }
 
 // Uint8Array/ArrayBuffer → base64, chunked (String.fromCharCode.apply blows
@@ -300,11 +335,12 @@ function parseVaultUrl(raw) {
   } else if (s.indexOf('/') !== -1 &&
              (/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:\d+)?\//.test(s) || /^localhost(:\d+)?\//i.test(s))) {
     // Scheme-less host prefix ("notes.sarris.dev/vault/x", "localhost:3000/x")
-    // — assume https (a local http dev server can still be typed with its
-    // scheme, or via the Server URL field). Checked BEFORE the scheme reject
-    // below so "localhost:3000/…" isn't mistaken for a "localhost:" scheme.
+    // — assume https for public hosts, http for local/dev hosts (a plain-HTTP
+    // server behind an https:// URL fails with ERR_SSL_VERSION_OR_CIPHER_MISMATCH).
+    // Checked BEFORE the scheme reject below so "localhost:3000/…" isn't
+    // mistaken for a "localhost:" scheme.
     var hostPart = s.slice(0, s.indexOf('/'));
-    baseUrl = 'https://' + hostPart;
+    baseUrl = (isLocalHostName(hostOf(hostPart)) ? 'http://' : 'https://') + hostPart;
     rest = s.slice(hostPart.length);
   } else if (/^[a-z][a-z0-9+.-]*:/i.test(s)) {
     // Any other scheme (obsidian:, javascript:, data:, mailto:, …) — refuse.
@@ -435,9 +471,26 @@ async function http(opts) {
   }
   // Exhausted: a retryable STATUS is returned raw so callers surface their
   // own message (429 "wait a minute", 503 "not configured"); transport
-  // errors throw as before.
+  // errors throw — with a hint for the mistakes that produce them most
+  // often (https:// at a plain-HTTP server, server down, typo'd hostname).
   if (lastRes) return lastRes;
-  throw lastErr;
+  throw withTransportHint(lastErr, opts && opts.url);
+}
+
+function withTransportHint(err, url) {
+  var msg = String((err && err.message) || err || '');
+  var hint = '';
+  if (/ERR_SSL|ERR_CERT|SSL|handshake/i.test(msg) && /^https:/i.test(String(url || ''))) {
+    hint = ' — the HTTPS handshake was rejected: the server is probably plain HTTP. Use http:// in the URL (localhost / 127.* / 192.168.* / 10.* / 172.16-31.* / *.local are assumed http:// automatically).';
+  } else if (/ERR_CONNECTION_REFUSED/i.test(msg)) {
+    hint = ' — nothing is listening at that address; is the server running, and is the port right?';
+  } else if (/ERR_NAME_NOT_RESOLVED/i.test(msg)) {
+    hint = ' — the hostname does not resolve; check the Server URL for typos.';
+  }
+  if (hint && err && typeof err.message === 'string' && err.message.indexOf('—') === -1) {
+    err.message = msg + hint;
+  }
+  return err;
 }
 
 // ── remote: the /sync/v1 client (mirror of remote-client.js over http()) ───
@@ -657,6 +710,18 @@ var NeonSyncPlugin = class extends PluginBase {
       this.doSync();
     });
     this.addCommand({
+      id: 'neon-connect',
+      name: 'Connect / unlock vault (password → token)',
+      callback: async () => {
+        try {
+          await this.connect();
+          new Notice('Neon sync: connected, token saved');
+        } catch (err) {
+          new Notice('Neon sync: ' + ((err && err.message) || err));
+        }
+      },
+    });
+    this.addCommand({
       id: 'neon-sync-now',
       name: 'Sync now',
       callback: () => this.doSync(),
@@ -689,6 +754,10 @@ var NeonSyncPlugin = class extends PluginBase {
           : DEFAULTS[k];
       }
     }
+    // Tolerate hand-edited data.json: "localhost:3000/" or a missing scheme
+    // normalizes to a usable origin (http:// for local/dev hosts, https://
+    // otherwise) instead of failing deep inside requestUrl.
+    this.settings.baseUrl = normalizeBaseUrl(this.settings.baseUrl);
   }
 
   async saveSettings() {
@@ -1172,54 +1241,75 @@ class NeonSyncSettingTab extends PluginSettingTabBase {
     var status = new Setting(el)
       .setName('Status')
       .setDesc(_this.statusText());
-    status.addButton(function (b) {
-      b.setButtonText('Check').onClick(async function () {
-        b.setDisabled(true);
-        try {
-          var info = await vaultStatus(s);
-          status.setDesc((info.claimed ? 'claimed' : 'UNCLAIMED — Connect will claim it') +
-            ' · token ' + (tokenExpired(s.token) ? 'missing/expired' : 'valid'));
-        } catch (err) {
-          status.setDesc('error: ' + ((err && err.message) || err));
-        } finally {
-          b.setDisabled(false);
-        }
+
+    // One action per row: several buttons sharing a single row can clip
+    // off-screen on narrow/mobile layouts — and every action also exists in
+    // the command palette (Connect / Sync now / Pull only).
+    new Setting(el)
+      .setName('Connect')
+      .setDesc('Exchange the password for a token — claims the vault if the name is still unclaimed.')
+      .addButton(function (b) {
+        b.setButtonText('Connect').setCta().onClick(async function () {
+          b.setDisabled(true);
+          try {
+            await plugin.connect();
+            status.setDesc(_this.statusText());
+            new Notice('Neon sync: connected, token saved');
+          } catch (err) {
+            new Notice('Neon sync: ' + ((err && err.message) || err));
+          } finally {
+            b.setDisabled(false);
+          }
+        });
       });
-    });
-    status.addButton(function (b) {
-      b.setButtonText('Connect').setCta().onClick(async function () {
-        b.setDisabled(true);
-        try {
-          await plugin.connect();
-          status.setDesc(_this.statusText());
-          new Notice('Neon sync: connected, token saved');
-        } catch (err) {
-          new Notice('Neon sync: ' + ((err && err.message) || err));
-        } finally {
-          b.setDisabled(false);
-        }
+
+    new Setting(el)
+      .setName('Check')
+      .setDesc('Ask the server whether the vault is claimed and the stored token is still valid.')
+      .addButton(function (b) {
+        b.setButtonText('Check').onClick(async function () {
+          b.setDisabled(true);
+          try {
+            var info = await vaultStatus(s);
+            status.setDesc((info.claimed ? 'claimed' : 'UNCLAIMED — Connect will claim it') +
+              ' · token ' + (tokenExpired(s.token) ? 'missing/expired' : 'valid'));
+          } catch (err) {
+            status.setDesc('error: ' + ((err && err.message) || err));
+          } finally {
+            b.setDisabled(false);
+          }
+        });
       });
-    });
-    status.addButton(function (b) {
-      b.setButtonText('Sync now').onClick(async function () {
-        b.setDisabled(true);
-        try {
-          await plugin.doSync();
-        } catch (_) { /* Notice already shown */ } finally {
-          b.setDisabled(false);
-        }
+
+    new Setting(el)
+      .setName('Sync now')
+      .setDesc('Full sync: pull server changes, resolve conflicts, push local changes.')
+      .addButton(function (b) {
+        b.setButtonText('Sync now').onClick(async function () {
+          b.setDisabled(true);
+          try {
+            await plugin.doSync();
+            status.setDesc(_this.statusText());
+          } catch (_) { /* Notice already shown */ } finally {
+            b.setDisabled(false);
+          }
+        });
       });
-    });
-    status.addButton(function (b) {
-      b.setButtonText('Pull').onClick(async function () {
-        b.setDisabled(true);
-        try {
-          await plugin.doSync(false, true);
-        } catch (_) { /* Notice already shown */ } finally {
-          b.setDisabled(false);
-        }
+
+    new Setting(el)
+      .setName('Pull only')
+      .setDesc('Download server changes without pushing anything.')
+      .addButton(function (b) {
+        b.setButtonText('Pull').onClick(async function () {
+          b.setDisabled(true);
+          try {
+            await plugin.doSync(false, true);
+            status.setDesc(_this.statusText());
+          } catch (_) { /* Notice already shown */ } finally {
+            b.setDisabled(false);
+          }
+        });
       });
-    });
 
     new Setting(el)
       .setName('Auto-sync interval (minutes)')
@@ -1236,8 +1326,10 @@ class NeonSyncSettingTab extends PluginSettingTabBase {
 
   statusText() {
     var s = this.plugin.settings;
-    if (!s.baseUrl || !s.vault) return 'not configured yet';
-    var tokenState = !s.token ? 'no token' : (tokenExpired(s.token) ? 'token expired' : 'token valid');
+    if (!s.baseUrl || !s.vault) {
+      return 'not configured yet — paste your vault URL at the top (or fill Server URL + Vault name), enter the password, then press Connect.';
+    }
+    var tokenState = !s.token ? 'no token — press Connect' : (tokenExpired(s.token) ? 'token expired — press Connect' : 'token valid');
     return 'vault "' + s.vault + '" at ' + s.baseUrl + ' · ' + tokenState;
   }
 }
@@ -1251,5 +1343,7 @@ NeonSyncPlugin.tokenExpired = tokenExpired;
 NeonSyncPlugin.sha256Hex = sha256Hex;
 NeonSyncPlugin.bytesToBase64 = bytesToBase64;
 NeonSyncPlugin.parseVaultUrl = parseVaultUrl;
+NeonSyncPlugin.normalizeBaseUrl = normalizeBaseUrl;
+NeonSyncPlugin.isLocalHostName = isLocalHostName;
 
 module.exports = NeonSyncPlugin;
