@@ -159,6 +159,20 @@ password set in one client unlocks the vault in the other), then **Sync now**
 (`neon-sync-v*`). See its README for install options (including BRAT on
 mobile).
 
+## Domains
+
+Every hostname that should reach the API must be attached to **this**
+Vercel project (root directory `src/deployments/vercel`) — that is what makes
+`/sync/v1/*` exist, and every hostname attached here shares the same
+`DATABASE_URL`, so a vault claimed through one is visible through the others.
+A project rooted at `src/sync-server` looks similar in the dashboard and
+answers `500` on every request (it is a `bun index.js` filesystem server —
+see that directory's README); the Obsidian plugin reports that as
+`manifest: HTTP 500 — the deployment crashed before answering`. Adding a
+hostname here needs no code change: Vercel issues the certificate through
+`http-01` as long as DNS points at Vercel (Cloudflare: **DNS only**, grey
+cloud).
+
 ## Point a device at it
 
 The easiest path needs no code: open `/vault/<name>`, type the password (or

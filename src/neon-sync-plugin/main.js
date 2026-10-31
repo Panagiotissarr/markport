@@ -417,18 +417,54 @@ async function httpOnce(opts) {
     }
   }
   var status = res.status;
-  var text = typeof res.text === 'string' ? res.text : '';
-  var json = res.json;
-  if (json === undefined || json === null) {
-    if (text) {
-      try { json = JSON.parse(text); } catch (_) { json = null; }
-    } else {
-      json = null;
-    }
+  // ── read the body DEFENSIVELY ─────────────────────────────────────────
+  // Obsidian's response object exposes `text` / `json` / `arrayBuffer` as
+  // GETTERS, and the `json` getter THROWS a SyntaxError for any body that
+  // is not JSON. A blob GET legitimately returns raw note bytes (a CSS
+  // snippet starts with "/* … */"), so a bare `var json = res.json` killed
+  // the pull with
+  //     SyntaxError: Unexpected token '/', "/*\nTHIS IS"... is not valid JSON
+  // — the body was a note, not an error. Every accessor is wrapped now:
+  // a body-format mismatch must never abort an HTTP call.
+  var text = '';
+  try {
+    if (typeof res.text === 'string') text = res.text;
+  } catch (_) {
+    text = ''; // binary body — decoders can throw too
   }
-  var ab = res.arrayBuffer;
-  if (typeof ab === 'function') ab = ab.call(res); // tolerate method-style access
+  var json = null;
+  try {
+    if (res.json !== undefined && res.json !== null) json = res.json;
+  } catch (_) {
+    json = null;
+  }
+  if (json === null && text) {
+    try { json = JSON.parse(text); } catch (_) { json = null; }
+  }
+  var ab = null;
+  try {
+    ab = res.arrayBuffer;
+    if (typeof ab === 'function') ab = ab.call(res); // tolerate method-style access
+  } catch (_) {
+    ab = null;
+  }
   return { status: status, text: text, json: json, arrayBuffer: ab };
+}
+
+// Suffix for non-2xx errors: a short body excerpt plus a plain-language hint
+// for the way a BROKEN deployment answers (Vercel returns
+// FUNCTION_INVOCATION_FAILED / its "An error occurred" page when the
+// deployed entry point cannot serve the request) — otherwise a bare
+// "manifest: HTTP 500" sends the user hunting in the plugin.
+function statusDetail(res) {
+  var t = res && typeof res.text === 'string' ? res.text : '';
+  var flat = t.replace(/\s+/g, ' ').trim();
+  var detail = '';
+  if (/FUNCTION_INVOCATION_FAILED|NO_RESPONSE_FROM_FUNCTION|An error occurred with your deployment|DEPLOYMENT_NOT_FOUND/i.test(flat)) {
+    detail = ' — the deployment crashed before answering (wrong entry point or missing runtime config)';
+  }
+  if (flat) detail += ' [' + flat.slice(0, 140) + ']';
+  return detail;
 }
 
 // Transient-failure retries — the same hardening the browser client's
@@ -523,7 +559,7 @@ function createRemote(settings) {
       '?' + vaultQuery() + (after ? 'after=' + encodeURIComponent(after) : '');
     var res = await http({ url: url, method: 'GET', headers: authHeaders() });
     if (res.status === 401) throw authError('manifest: authentication failed (401)');
-    if (res.status !== 200) throw new Error('manifest: HTTP ' + res.status);
+    if (res.status !== 200) throw new Error('manifest: HTTP ' + res.status + statusDetail(res));
     return res.json;
   }
 
@@ -557,7 +593,7 @@ function createRemote(settings) {
       if (res.status === 416) break;
       if (res.status === 401) throw authError('blob range: authentication failed (401)');
       if (res.status !== 206 && res.status !== 200) {
-        throw new Error('blob range: HTTP ' + res.status + ' at offset ' + start);
+        throw new Error('blob range: HTTP ' + res.status + ' at offset ' + start + statusDetail(res));
       }
       var buf = res.arrayBuffer;
       parts.push(new Uint8Array(buf));
@@ -579,7 +615,7 @@ function createRemote(settings) {
     var res = await http({ url: blobUrl(hash), method: 'GET', headers: authHeaders() });
     if (res.status === 401) throw authError('blob: authentication failed (401)');
     if (res.status === 413) return blobRanged(hash); // server full-GET cap
-    if (res.status !== 200) throw new Error('blob: HTTP ' + res.status + ' for hash ' + hash);
+    if (res.status !== 200) throw new Error('blob: HTTP ' + res.status + ' for hash ' + hash + statusDetail(res));
     return res.arrayBuffer;
   }
 
@@ -606,7 +642,7 @@ function createRemote(settings) {
       }
       if (res.status === 409) throw new Error('putBlob: content does not match hash ' + hash);
       if (res.status !== 200) {
-        throw new Error('putBlob: HTTP ' + res.status + ' (chunk ' + i + '/' + total + ')');
+        throw new Error('putBlob: HTTP ' + res.status + ' (chunk ' + i + '/' + total + ')' + statusDetail(res));
       }
     }
     return { hash: hash, stored: true };
@@ -623,7 +659,7 @@ function createRemote(settings) {
     if (res.status === 501 || res.status === 404) {
       throw pushUnsupported('missingBlobs: HTTP ' + res.status);
     }
-    if (res.status !== 200) throw new Error('missingBlobs: HTTP ' + res.status);
+    if (res.status !== 200) throw new Error('missingBlobs: HTTP ' + res.status + statusDetail(res));
     return (res.json && res.json.missing) || [];
   }
 
@@ -642,7 +678,7 @@ function createRemote(settings) {
       e.hashes = (res.json && res.json.hashes) || [];
       throw e;
     }
-    if (res.status !== 200) throw new Error('commit: HTTP ' + res.status);
+    if (res.status !== 200) throw new Error('commit: HTTP ' + res.status + statusDetail(res));
     return res.json;
   }
 
@@ -662,7 +698,7 @@ async function vaultStatus(settings) {
   var url = joinUrl(settings.baseUrl, '/sync/v1/vaults/' + encodeURIComponent(settings.vault));
   var res = await http({ url: url, method: 'GET', headers: { 'cache-control': 'no-store' } });
   if (res.status === 503) throw new Error('server not configured (503)');
-  if (res.status !== 200) throw new Error('vault status: HTTP ' + res.status);
+  if (res.status !== 200) throw new Error('vault status: HTTP ' + res.status + statusDetail(res));
   return res.json; // {name, claimed}
 }
 
@@ -681,7 +717,7 @@ async function claimOrUnlock(settings) {
   }
   if (res.status === 503) throw new Error('server not configured (503)');
   if (res.status !== 200 && res.status !== 201) {
-    throw new Error('claim/unlock: HTTP ' + res.status);
+    throw new Error('claim/unlock: HTTP ' + res.status + statusDetail(res));
   }
   if (!res.json || !res.json.token) throw new Error('no token in server response');
   return res.json.token;
@@ -1431,5 +1467,10 @@ NeonSyncPlugin.bytesToBase64 = bytesToBase64;
 NeonSyncPlugin.parseVaultUrl = parseVaultUrl;
 NeonSyncPlugin.normalizeBaseUrl = normalizeBaseUrl;
 NeonSyncPlugin.isLocalHostName = isLocalHostName;
+// Transport seam for tests (test/http.test.js): the web build's response
+// getters — not the plugin — are what make a binary body explode.
+NeonSyncPlugin.httpOnce = httpOnce;
+NeonSyncPlugin.createRemote = createRemote;
+NeonSyncPlugin.statusDetail = statusDetail;
 
 module.exports = NeonSyncPlugin;

@@ -28,6 +28,11 @@ same CAS/conflict semantics.
   Since v0.2.2 that collision is handled — bytes go through the storage
   adapter, the notice asks for a **page reload**, and a stale index can
   never turn into a deletion pushed to the server.
+- **The sync host must run the APP, not the dev server.** `sync.notes.sarris.dev`
+  and `notes.sarris.dev` both need the Vercel project whose root directory is
+  `src/deployments/vercel` (app + `/api/sync/v1/*`). A project rooted at
+  `src/sync-server` deploys a `bun index.js` filesystem server and answers
+  every request with 500.
 
 ## Install
 
@@ -35,13 +40,13 @@ same CAS/conflict semantics.
 
 Everything needed lives in this directory — `main.js` + `manifest.json` —
 plus a ready-to-extract
-[release/markport-neon-sync-0.2.2.zip](release/markport-neon-sync-0.2.2.zip)
+[release/markport-neon-sync-0.2.3.zip](release/markport-neon-sync-0.2.3.zip)
 committed alongside (rebuild any time with
-`zip -j release/markport-neon-sync-0.2.2.zip main.js manifest.json README.md`).
+`zip -j release/markport-neon-sync-0.2.3.zip main.js manifest.json README.md`).
 On GitHub, open a file and use **Download raw file**; the `neon-sync-v*`
 releases carry each version's changelog. If a release also has the loose
 `main.js` / `manifest.json` attached as assets (`gh release upload
-neon-sync-v0.2.2 src/neon-sync-plugin/main.js src/neon-sync-plugin/manifest.json`
+neon-sync-v0.2.3 src/neon-sync-plugin/main.js src/neon-sync-plugin/manifest.json`
 from your own machine — the build sandbox can't reach GitHub's upload
 endpoint), the [BRAT](https://github.com/TfTHacker/obsidian42-brat) plugin can
 install and update straight from it (*Add beta plugin* →
@@ -185,6 +190,22 @@ the server still has unchanged is simply re-downloaded.
   turn into a *deletion pushed to the server*. The second was an older
   mobile bundle without `setInputType` on the password field: the call threw
   and the settings tab stopped rendering below the Password row.
+- **`SyntaxError: Unexpected token '/', "/* …" is not valid JSON` at
+  `httpOnce` / `blob`** — fixed in v0.2.3. Obsidian's response object
+  exposes `json` as a **getter that throws** on any non-JSON body, and a
+  blob GET returns raw note bytes (a CSS snippet starts with `/* */`), so
+  every pull died on the first non-JSON note. The plugin now reads
+  `text` / `json` / `arrayBuffer` defensively — a body-format mismatch can
+  never abort a sync again.
+- **`manifest: HTTP 500 … the deployment crashed before answering`** — the
+  host answers, but the deployed code cannot serve `/sync/v1/*`. Typically
+  the Vercel project deploys a **server that isn't this protocol** (e.g.
+  the filesystem `src/sync-server`, which only works when you run
+  `bun index.js` yourself with `VAULT_PATH` + `SYNC_TOKEN` and a writable
+  disk — none of which exist in a serverless function). Point the plugin at
+  the deployment that actually runs the app + API (for this repo:
+  `https://notes.sarris.dev`). Since v0.2.3 the error also prints the
+  response body's first 140 chars, which is what identifies this.
 - **Hand-edited `data.json`** — lives at
   `<vault>/.obsidian/plugins/markport-neon-sync/data.json`; shape:
   `{"baseUrl":"http://localhost:3000","vault":"myvault","password":"…","token":"","intervalMinutes":0,"synced":{},"mirror":{}}`.
@@ -196,7 +217,7 @@ the server still has unchanged is simply re-downloaded.
 
 ```bash
 cd src/neon-sync-plugin
-node --test "test/*.test.js"     # 51 tests: decision table + helpers + URL parsing + settings render + web-vault writes
+node --test "test/*.test.js"     # 57 tests: decision table + helpers + URL parsing + settings render + web-vault writes + HTTP transport
 ```
 
 The pure functions are attached to the exported class as statics so they run
