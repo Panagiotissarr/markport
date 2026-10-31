@@ -41,7 +41,11 @@ test('single-chunk upload → stored, then GET returns the bytes immutably', asy
   const getRes = await get(hash);
   assert.equal(getRes.status, 200);
   assert.equal(getRes.headers.get('content-type'), 'application/octet-stream');
-  assert.equal(getRes.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+  // `private` on purpose: see the header comment in api/sync/v1/blob/[hash].js
+  // — `public` would licence a shared cache to serve token-gated content to
+  // the next caller without a token (RFC 9111 §3.5).
+  assert.equal(getRes.headers.get('cache-control'), 'private, max-age=31536000, immutable');
+  assert.equal(getRes.headers.get('x-content-type-options'), 'nosniff');
   assert.equal(getRes.headers.get('etag'), `"${hash}"`);
   assert.equal(getRes.headers.get('accept-ranges'), 'bytes');
   assert.equal(Buffer.from(await getRes.arrayBuffer()).toString(), data);

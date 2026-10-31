@@ -731,6 +731,15 @@ var DEFAULTS = {
   baseUrl: '',
   vault: '',
   password: '',
+  // Persisting the password writes it into
+  // `<vault>/.obsidian/plugins/markport-neon-sync/data.json` IN PLAINTEXT.
+  // That folder is inside the vault, and vaults get copied around: cloud
+  // backups, Syncthing/iCloud, another sync tool — and the web build's own
+  // sync pushes dot-paths, so the password can reach the sync server itself.
+  // Off by default: the password stays in memory for this session and the
+  // stored `token` (which expires, and is scoped to ONE vault) keeps sync
+  // working across restarts. Opt in when unattended refresh matters more.
+  rememberPassword: false,
   token: '',
   intervalMinutes: 0, // 0 = manual sync only
   synced: {},         // S: {path: hash} — last-synced hashes (CAS bases)
@@ -797,10 +806,27 @@ var NeonSyncPlugin = class extends PluginBase {
     // normalizes to a usable origin (http:// for local/dev hosts, https://
     // otherwise) instead of failing deep inside requestUrl.
     this.settings.baseUrl = normalizeBaseUrl(this.settings.baseUrl);
+    // A password written by an older version (or hand-edited in) stays usable
+    // for THIS session but is not written back — the next saveSettings drops
+    // it from disk, so the credential stops travelling with the vault.
+    this._passwordFromDisk = !!this.settings.password && this.settings.rememberPassword !== true;
+    if (this._passwordFromDisk) {
+      console.warn('[neon-sync] password found in data.json — using it for this session, ' +
+        'then removing it from disk (enable "Remember password" to keep it)');
+    }
   }
 
   async saveSettings() {
-    await this.saveData(this.settings);
+    // Everything except the password is written as-is; the password only
+    // when "Remember password" is on. See DEFAULTS.rememberPassword for why
+    // this is opt-in (data.json lives inside the vault and gets copied).
+    var data = {};
+    for (var k in this.settings) {
+      if (!Object.prototype.hasOwnProperty.call(this.settings, k)) continue;
+      if (k === 'password' && this.settings.rememberPassword !== true) continue;
+      data[k] = this.settings[k];
+    }
+    await this.saveData(data);
   }
 
   startInterval() {
@@ -1329,7 +1355,8 @@ class NeonSyncSettingTab extends PluginSettingTabBase {
 
     new Setting(el)
       .setName('Password')
-      .setDesc('Claim/unlock password. Stored in this plugin\'s data.json so tokens can refresh; leave empty to use a manually pasted token only.')
+      .setDesc('Claim/unlock password. Kept in memory for this session (see "Remember password" ' +
+        'to also write it to data.json); leave empty to use a manually pasted token only.')
       .addText(function (t) {
         // setInputType is missing on older Obsidian bundles (e.g. the pinned
         // mobile build behind the web app): an unguarded call threw
@@ -1347,6 +1374,20 @@ class NeonSyncSettingTab extends PluginSettingTabBase {
             s.password = v;
             await plugin.saveSettings();
           });
+      });
+
+    new Setting(el)
+      .setName('Remember password')
+      .setDesc('Off: the password is kept in memory only and never written to data.json — ' +
+        'sync keeps working with the saved token until it expires, then you re-enter the password. ' +
+        'On: written to data.json in PLAINTEXT, so any copy of this vault (cloud backup, another ' +
+        'sync tool, the web build\'s own sync) carries it.')
+      .addToggle(function (t) {
+        t.setValue(s.rememberPassword === true).onChange(async function (v) {
+          s.rememberPassword = !!v;
+          if (!s.rememberPassword) delete s.password; // drop it from memory too
+          await plugin.saveSettings();
+        });
       });
 
     new Setting(el)

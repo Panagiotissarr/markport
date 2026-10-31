@@ -40,13 +40,13 @@ same CAS/conflict semantics.
 
 Everything needed lives in this directory — `main.js` + `manifest.json` —
 plus a ready-to-extract
-[release/markport-neon-sync-0.2.3.zip](release/markport-neon-sync-0.2.3.zip)
+[release/markport-neon-sync-0.2.4.zip](release/markport-neon-sync-0.2.4.zip)
 committed alongside (rebuild any time with
-`zip -j release/markport-neon-sync-0.2.3.zip main.js manifest.json README.md`).
+`zip -j release/markport-neon-sync-0.2.4.zip main.js manifest.json README.md`).
 On GitHub, open a file and use **Download raw file**; the `neon-sync-v*`
 releases carry each version's changelog. If a release also has the loose
 `main.js` / `manifest.json` attached as assets (`gh release upload
-neon-sync-v0.2.3 src/neon-sync-plugin/main.js src/neon-sync-plugin/manifest.json`
+neon-sync-v0.2.4 src/neon-sync-plugin/main.js src/neon-sync-plugin/manifest.json`
 from your own machine — the build sandbox can't reach GitHub's upload
 endpoint), the [BRAT](https://github.com/TfTHacker/obsidian42-brat) plugin can
 install and update straight from it (*Add beta plugin* →
@@ -206,6 +206,16 @@ the server still has unchanged is simply re-downloaded.
   the deployment that actually runs the app + API (for this repo:
   `https://notes.sarris.dev`). Since v0.2.3 the error also prints the
   response body's first 140 chars, which is what identifies this.
+- **Where is my password stored?** — In memory, for the session, by default.
+  `data.json` only gets it if you turn on **Remember password**; without that,
+  the file holds the vault token (which expires and only opens this one vault)
+  plus sync state. `data.json` sits inside the vault, and vaults get copied —
+  cloud backups, other sync tools, and the web build's own sync — so a
+  plaintext password there travels with them. A password written by an older
+  version keeps working for the current session and is removed from disk on
+  the next save. To claim a vault that already has content, enter its
+  password or paste the operator `SYNC_TOKEN` into **Token** (the server
+  answers `409` otherwise).
 - **Hand-edited `data.json`** — lives at
   `<vault>/.obsidian/plugins/markport-neon-sync/data.json`; shape:
   `{"baseUrl":"http://localhost:3000","vault":"myvault","password":"…","token":"","intervalMinutes":0,"synced":{},"mirror":{}}`.
@@ -217,7 +227,7 @@ the server still has unchanged is simply re-downloaded.
 
 ```bash
 cd src/neon-sync-plugin
-node --test "test/*.test.js"     # 57 tests: decision table + helpers + URL parsing + settings render + web-vault writes + HTTP transport
+node --test "test/*.test.js"     # 62 tests: decision table + helpers + URL parsing + settings render + web-vault writes + HTTP transport + credential-at-rest
 ```
 
 The pure functions are attached to the exported class as statics so they run

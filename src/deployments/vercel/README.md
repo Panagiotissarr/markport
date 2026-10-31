@@ -159,6 +159,27 @@ password set in one client unlocks the vault in the other), then **Sync now**
 (`neon-sync-v*`). See its README for install options (including BRAT on
 mobile).
 
+## Security
+
+The sync surface is reviewed in [SECURITY.md](SECURITY.md) — threat model,
+what is enforced, what was fixed, and the residual risks. The short version
+for operators:
+
+- **Claim a password for every vault you address by name**
+  (`POST /sync/v1/vaults/<name>`). An *empty* name is claimable by its first
+  visitor by design; a name that already holds content can only be claimed
+  with the operator `SYNC_TOKEN` (otherwise `409`), which is what stops a
+  stranger from adopting your vault.
+- **Treat `SYNC_TOKEN` as the master key.** It opens every vault and keys the
+  `mpv1.*` token HMAC. Rotate it if it ever leaves the Vercel dashboard.
+- **`SYNC_STORE=memory` is refused on a deployment** (it loses data on the
+  next cold start); `SYNC_ALLOW_MEMORY_STORE=1` overrides for local work.
+- Vault-scoped tokens reach one vault and nothing else (`403` otherwise), but
+  blobs themselves are global and content-addressed — knowing a hash is
+  knowing the content.
+- Run the store's tests against a real database before shipping a change to
+  the SQL: `DATABASE_URL=postgres://… npm test` (without it, those tests skip).
+
 ## Domains
 
 Every hostname that should reach the API must be attached to **this**

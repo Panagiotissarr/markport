@@ -44,8 +44,17 @@ async function readBlob(request, hash) {
   let body = blob.data;
   const headers = {
     'accept-ranges': 'bytes',
-    'cache-control': 'public, max-age=31536000, immutable',
+    // `private`: the bytes are behind a bearer token. `public` is an explicit
+    // licence for a SHARED cache (CDN, corporate proxy) to store a response
+    // to a request that carried `Authorization` and hand it to the next
+    // caller without one — RFC 9111 §3.5 allows exactly that when the
+    // response says `public`. Content is still immutable, so the browser's
+    // own cache keeps the same benefit without the leak.
+    'cache-control': 'private, max-age=31536000, immutable',
     'content-type': 'application/octet-stream',
+    // Note: no filename/path is ever echoed, and vault content is arbitrary
+    // user data — never let a browser sniff it into an active type.
+    'x-content-type-options': 'nosniff',
     etag: `"${hash}"`,
   };
 

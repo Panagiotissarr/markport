@@ -45,12 +45,19 @@ class ButtonComponentStub {
   onClick(fn) { this._onClick = fn; return this; }
 }
 
+class ToggleComponentStub {
+  constructor() { this.value = false; this._onChange = null; }
+  setValue(v) { this.value = !!v; return this; }
+  onChange(fn) { this._onChange = fn; return this; }
+}
+
 class SettingStub {
-  constructor() { this.name = ''; this.desc = ''; this.buttons = []; this.texts = []; rendered.push(this); }
+  constructor() { this.name = ''; this.desc = ''; this.buttons = []; this.texts = []; this.toggles = []; rendered.push(this); }
   setName(n) { this.name = String(n); return this; }
   setDesc(d) { this.desc = String(d); return this; }
   addText(cb) { const t = new TextComponentStub(); cb(t); this.texts.push(t); return this; }
   addButton(cb) { const b = new ButtonComponentStub(); cb(b); this.buttons.push(b); return this; }
+  addToggle(cb) { const t = new ToggleComponentStub(); cb(t); this.toggles.push(t); return this; }
 }
 
 const notices = [];
@@ -103,7 +110,7 @@ const Plugin = require('../main.js');
 async function bootedPlugin(data) {
   // Plugin (the real class from main.js) extends PluginStub via the hook —
   // instantiating IT (not the base) gives us onload()/loadSettings()/etc.
-  const p = new Plugin({ vault: {} }, { id: 'markport-neon-sync', version: '0.2.3' });
+  const p = new Plugin({ vault: {} }, { id: 'markport-neon-sync', version: '0.2.4' });
   if (data) p._data = data;
   await p.onload();
   return p;
@@ -134,7 +141,7 @@ test('display() renders EVERY action on its own row — Connect, Check, Sync now
 
   const connectRow = rows.find((r) => r.buttons[0].text === 'Connect');
   assert.ok(connectRow.buttons[0].cta, 'Connect should be the CTA');
-  assert.ok(/Markport Neon Sync v0\.2\.3/.test(rendered[0].name), 'header should show the version');
+  assert.ok(/Markport Neon Sync v0\.2\.4/.test(rendered[0].name), 'header should show the version');
 
   const pwRow = rendered.find((r) => r.name === 'Password');
   assert.equal(pwRow.texts[0].inputType, 'password', 'password field should be masked');
@@ -222,4 +229,55 @@ test('Connect row click runs plugin.connect and reports via Notice', async () =>
   await connectRow.buttons[0]._onClick();
   assert.equal(notices.length, 1);
   assert.match(notices[0].msg, /^Neon sync: /);
+});
+
+// ── credential at rest (security) ──────────────────────────────────────────
+// data.json lives in <vault>/.obsidian/plugins/<id>/, i.e. INSIDE a folder
+// that gets copied (cloud backup, other sync tools) and that the web build's
+// own sync even pushes to the server. A plaintext vault password there is a
+// credential leak; the token (expiring, single-vault) is enough to keep sync
+// working across restarts.
+
+test('password is NOT written to data.json by default', async () => {
+  const p = await bootedPlugin();
+  p.settings.password = 'correct horse battery staple';
+  await p.saveSettings();
+  assert.equal(p._data.password, undefined, 'password leaked into data.json');
+  // …but it is still usable in memory for this session.
+  assert.equal(p.settings.password, 'correct horse battery staple');
+});
+
+test('opting in to Remember password persists it', async () => {
+  const p = await bootedPlugin();
+  p.settings.password = 'pw-12345678';
+  p.settings.rememberPassword = true;
+  await p.saveSettings();
+  assert.equal(p._data.password, 'pw-12345678');
+});
+
+test('a password left in data.json by an older version is used, then dropped', async () => {
+  const p = await bootedPlugin({ baseUrl: 'https://notes.sarris.dev', vault: 'v', password: 'legacy-pw' });
+  // Usable for this session…
+  assert.equal(p.settings.password, 'legacy-pw');
+  // …and gone from disk after the next save.
+  await p.saveSettings();
+  assert.equal(p._data.password, undefined);
+});
+
+test('turning Remember password off forgets the password immediately', async () => {
+  const p = await bootedPlugin({ password: 'pw-abcdefgh', rememberPassword: true });
+  rendered.length = 0;
+  p.tabs[0].display();
+  const row = rendered.find((r) => r.name === 'Remember password');
+  assert.ok(row, 'Remember password row missing');
+  await row.toggles[0]._onChange(false);
+  assert.equal(p.settings.password, undefined);
+  assert.equal(p._data.password, undefined);
+});
+
+test('the token is still persisted (sync survives a restart without the password)', async () => {
+  const p = await bootedPlugin();
+  p.settings.token = 'mpv1.abc.123.sig';
+  await p.saveSettings();
+  assert.equal(p._data.token, 'mpv1.abc.123.sig');
 });
