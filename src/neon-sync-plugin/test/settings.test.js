@@ -14,11 +14,26 @@ const origLoad = Module._load;
 
 const rendered = []; // Setting rows constructed since the last reset
 
+// Tests flip this OFF to simulate older Obsidian bundles (the pinned mobile
+// build behind the web app) whose TextComponent has NO setInputType — the
+// unguarded call threw and killed display() below the Password row.
+let textHasSetInputType = true;
+
 class TextComponentStub {
-  constructor() { this.value = ''; this.placeholder = ''; this._onChange = null; }
+  constructor() {
+    this.value = '';
+    this.placeholder = '';
+    this._onChange = null;
+    this.inputType = null;
+    this.inputEl = { attrs: {}, setAttribute(k, v) { this.attrs[k] = String(v); } };
+    if (textHasSetInputType) {
+      // Instance-level so `typeof t.setInputType === 'function'` sees
+      // exactly what a real component would expose.
+      this.setInputType = (ty) => { this.inputType = String(ty); return this; };
+    }
+  }
   setPlaceholder(p) { this.placeholder = p; return this; }
   setValue(v) { this.value = v; return this; }
-  setInputType() { return this; }
   onChange(fn) { this._onChange = fn; return this; }
 }
 
@@ -88,7 +103,7 @@ const Plugin = require('../main.js');
 async function bootedPlugin(data) {
   // Plugin (the real class from main.js) extends PluginStub via the hook —
   // instantiating IT (not the base) gives us onload()/loadSettings()/etc.
-  const p = new Plugin({ vault: {} }, { id: 'markport-neon-sync', version: '0.2.1' });
+  const p = new Plugin({ vault: {} }, { id: 'markport-neon-sync', version: '0.2.2' });
   if (data) p._data = data;
   await p.onload();
   return p;
@@ -119,7 +134,36 @@ test('display() renders EVERY action on its own row — Connect, Check, Sync now
 
   const connectRow = rows.find((r) => r.buttons[0].text === 'Connect');
   assert.ok(connectRow.buttons[0].cta, 'Connect should be the CTA');
-  assert.ok(/Markport Neon Sync v0\.2\.1/.test(rendered[0].name), 'header should show the version');
+  assert.ok(/Markport Neon Sync v0\.2\.2/.test(rendered[0].name), 'header should show the version');
+
+  const pwRow = rendered.find((r) => r.name === 'Password');
+  assert.equal(pwRow.texts[0].inputType, 'password', 'password field should be masked');
+});
+
+test('older bundles without setInputType: display() survives and masks via inputEl', async () => {
+  // Regression: "t.setInputType is not a function" at NeonSyncSettingTab
+  // .display() killed the tab halfway down — Token, Status and all four
+  // action rows (Connect!) never rendered. The field must degrade instead.
+  const p = await bootedPlugin();
+  textHasSetInputType = false;
+  try {
+    rendered.length = 0;
+    assert.doesNotThrow(() => p.tabs[0].display(), 'display() must not throw');
+
+    const pwRow = rendered.find((r) => r.name === 'Password');
+    assert.equal(pwRow.texts[0].inputEl.attrs.type, 'password', 'fallback type=password on inputEl');
+
+    const labels = rendered.flatMap((r) => r.buttons.map((b) => b.text));
+    for (const label of ['Connect', 'Check', 'Sync now', 'Pull']) {
+      assert.ok(labels.includes(label), 'row below Password never rendered: ' + label);
+    }
+    // The rest of the text fields (and their handlers) still work.
+    const urlRow = rendered.find((r) => r.name === 'Vault URL');
+    await urlRow.texts[0]._onChange('https://notes.sarris.dev/vault/demo');
+    assert.equal(p.settings.vault, 'demo');
+  } finally {
+    textHasSetInputType = true;
+  }
 });
 
 test('Vault URL field fills Server URL + Vault name (settings AND their inputs)', async () => {

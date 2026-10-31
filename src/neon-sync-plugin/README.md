@@ -23,6 +23,11 @@ same CAS/conflict semantics.
   errors, 429/5xx) up to 3× with exponential backoff + jitter — the same
   hardening as the browser client. Retries are safe: blobs are
   content-addressed (idempotent) and commits are CAS-guarded.
+- **Web-app aware.** In the browser build a note can land in OPFS ahead of
+  Obsidian's file index (the app's own sync writes behind the adapter).
+  Since v0.2.2 that collision is handled — bytes go through the storage
+  adapter, the notice asks for a **page reload**, and a stale index can
+  never turn into a deletion pushed to the server.
 
 ## Install
 
@@ -30,13 +35,13 @@ same CAS/conflict semantics.
 
 Everything needed lives in this directory — `main.js` + `manifest.json` —
 plus a ready-to-extract
-[release/markport-neon-sync-0.2.1.zip](release/markport-neon-sync-0.2.1.zip)
+[release/markport-neon-sync-0.2.2.zip](release/markport-neon-sync-0.2.2.zip)
 committed alongside (rebuild any time with
-`zip -j release/markport-neon-sync-0.2.1.zip main.js manifest.json README.md`).
+`zip -j release/markport-neon-sync-0.2.2.zip main.js manifest.json README.md`).
 On GitHub, open a file and use **Download raw file**; the `neon-sync-v*`
 releases carry each version's changelog. If a release also has the loose
 `main.js` / `manifest.json` attached as assets (`gh release upload
-neon-sync-v0.2.1 src/neon-sync-plugin/main.js src/neon-sync-plugin/manifest.json`
+neon-sync-v0.2.2 src/neon-sync-plugin/main.js src/neon-sync-plugin/manifest.json`
 from your own machine — the build sandbox can't reach GitHub's upload
 endpoint), the [BRAT](https://github.com/TfTHacker/obsidian42-brat) plugin can
 install and update straight from it (*Add beta plugin* →
@@ -167,6 +172,19 @@ the server still has unchanged is simply re-downloaded.
   / data.json always wins, so fix it there. (Against a real deployment like
   `https://<app>.vercel.app` this error instead means the hostname doesn't
   serve TLS — check it for typos.)
+- **`Error: File already exists.` (or the settings page half-empty, with
+  `t.setInputType is not a function` in the console)** — both are fixed in
+  v0.2.2; upgrade. The first came from the **web app build**: its own sync
+  writes into OPFS *behind* Obsidian's file index, so a note can exist on
+  disk while the plugin's existence check still says "absent" — the
+  exclusive create then threw and aborted the whole sync. v0.2.2 catches
+  that, overwrites through the storage adapter and tells you to **reload the
+  page** (the notice ends with `reload the page to see N file(s)`); synced
+  state for those files is deliberately not recorded, so they are re-pulled
+  (idempotently) until the index catches up — and a stale index can never
+  turn into a *deletion pushed to the server*. The second was an older
+  mobile bundle without `setInputType` on the password field: the call threw
+  and the settings tab stopped rendering below the Password row.
 - **Hand-edited `data.json`** — lives at
   `<vault>/.obsidian/plugins/markport-neon-sync/data.json`; shape:
   `{"baseUrl":"http://localhost:3000","vault":"myvault","password":"…","token":"","intervalMinutes":0,"synced":{},"mirror":{}}`.
@@ -178,7 +196,7 @@ the server still has unchanged is simply re-downloaded.
 
 ```bash
 cd src/neon-sync-plugin
-node --test "test/*.test.js"     # 41 tests: decision table + helpers + URL parsing + settings render
+node --test "test/*.test.js"     # 51 tests: decision table + helpers + URL parsing + settings render + web-vault writes
 ```
 
 The pure functions are attached to the exported class as statics so they run
@@ -186,3 +204,8 @@ under plain Node — `require('obsidian')` is guarded and falls back to stubs
 outside Obsidian. `test/settings.test.js` goes further: it hooks
 `Module._load` with faithful Obsidian API stubs and actually renders the
 settings tab, so a missing/clipped button fails the suite.
+`test/web-vault.test.js` models the web build's split between the Obsidian
+index and the bytes on disk (OPFS) and pins the 0.2.2 behaviour: index-blind
+collisions go through the adapter instead of throwing, they never record
+`synced` state (no phantom deletions), and a file still present on disk is
+never deleted on the server.

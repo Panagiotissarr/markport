@@ -1,7 +1,7 @@
 {
   "id": "markport-neon-sync",
   "name": "Markport Neon Sync",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "minAppVersion": "1.4.0",
   "description": "Bidirectional sync with a Markport /sync/v1 server (Neon Postgres on Vercel). Paste your claimed vault URL, enter the password, sync. Works on desktop and mobile.",
   "author": "Markport",

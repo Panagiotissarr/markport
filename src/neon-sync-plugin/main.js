@@ -707,7 +707,10 @@ var NeonSyncPlugin = class extends PluginBase {
     this.syncing = false;
 
     this.addRibbonIcon('refresh-cw', 'Neon sync', () => {
-      this.doSync();
+      // Fire-and-forget: doSync reports failures via Notice + console.error;
+      // an uncaught rejection here would surface as "Uncaught (in promise)"
+      // noise in the dev console (especially in the web build).
+      this.doSync().catch(() => { /* already reported */ });
     });
     this.addCommand({
       id: 'neon-connect',
@@ -724,12 +727,12 @@ var NeonSyncPlugin = class extends PluginBase {
     this.addCommand({
       id: 'neon-sync-now',
       name: 'Sync now',
-      callback: () => this.doSync(),
+      callback: () => { this.doSync().catch(() => { /* already reported */ }); },
     });
     this.addCommand({
       id: 'neon-pull-only',
       name: 'Pull only (download server changes, no push)',
-      callback: () => this.doSync(false, true),
+      callback: () => { this.doSync(false, true).catch(() => { /* already reported */ }); },
     });
     this.addSettingTab(new NeonSyncSettingTab(this.app, this));
     this.startInterval();
@@ -771,7 +774,7 @@ var NeonSyncPlugin = class extends PluginBase {
     }
     var mins = Number(this.settings.intervalMinutes) || 0;
     if (mins > 0) {
-      this._timer = setInterval(() => { this.doSync(true); }, mins * 60 * 1000);
+      this._timer = setInterval(() => { this.doSync(true).catch(() => { /* already reported */ }); }, mins * 60 * 1000);
       this.registerInterval(this._timer);
     }
   }
@@ -810,6 +813,7 @@ var NeonSyncPlugin = class extends PluginBase {
       new Notice('Neon sync: ↓ ' + summary.downloaded + ' ↑ ' + summary.pushed +
         ' deletions ' + summary.deleted +
         (summary.conflicts ? ' · conflicts ' + summary.conflicts : '') +
+        (summary.reloadNeeded ? ' · reload the page to see ' + summary.reloadNeeded + ' file(s)' : '') +
         (pullOnly ? ' (pull only)' : '') +
         (summary.pushSupported === false ? ' (server is pull-only)' : ''));
       return summary;
@@ -858,6 +862,7 @@ var NeonSyncPlugin = class extends PluginBase {
         conflicts: 0,
         conflictPaths: [],
         skipped: 0,
+        reloadNeeded: 0,
         pushSupported: true,
       },
     };
@@ -897,9 +902,14 @@ var NeonSyncPlugin = class extends PluginBase {
     for (var d = 0; d < plan.downloads.length; d++) {
       var dl = plan.downloads[d];
       var buf = await remote.blob(dl.hash);
-      await this.writeVaultBytes(dl.path, buf);
-      s.synced[dl.path] = dl.hash;
-      await this.rememberFile(dl.path);
+      var visible = await this.writeVaultBytes(dl.path, buf);
+      if (visible) {
+        s.synced[dl.path] = dl.hash;
+        await this.rememberFile(dl.path);
+      } else {
+        // Index-blind write (web build): S stays ⊥ — see writeVaultBytes.
+        ctx.summary.reloadNeeded++;
+      }
       ctx.summary.downloaded++;
     }
 
@@ -925,8 +935,29 @@ var NeonSyncPlugin = class extends PluginBase {
     // stay unapplied (synced/mirror were not touched for them), so the next
     // full sync picks them up.
     if (!pullOnly) {
+      // "L⊥ + S=R" reads as "we deleted it" — but in the web build a file
+      // can sit in OPFS while Obsidian's index is still blind to it (the
+      // app's own pulls write behind the adapter). Pushing that deletion
+      // would wipe the note off the SERVER. Confirm with the storage
+      // adapter (a local stat, no network) before deleting anything.
+      var deletions = plan.pushDeletions;
+      var adapter = app.vault.adapter;
+      if (adapter && typeof adapter.exists === 'function' && deletions.length > 0) {
+        var confirmed = [];
+        for (var dd = 0; dd < deletions.length; dd++) {
+          var onDisk = false;
+          try {
+            onDisk = await adapter.exists(normalizePath(deletions[dd].path));
+          } catch (_) {
+            onDisk = false; // adapter can't tell → trust the index (desktop norm)
+          }
+          if (onDisk) ctx.summary.reloadNeeded++;
+          else confirmed.push(deletions[dd]);
+        }
+        deletions = confirmed;
+      }
       try {
-        await this.pushOps(ctx, plan.pushChanges, plan.pushDeletions);
+        await this.pushOps(ctx, plan.pushChanges, deletions);
         for (var lc = 0; lc < ctx.lateConflicts.length; lc++) {
           await this.resolveConflict(ctx, ctx.lateConflicts[lc].path, ctx.lateConflicts[lc]);
         }
@@ -967,6 +998,19 @@ var NeonSyncPlugin = class extends PluginBase {
     } catch (_) { /* raced with another writer — fine */ }
   }
 
+  // Write bytes at `path`. Returns TRUE when the vault INDEX knows the file
+  // afterwards (desktop/mobile norm), FALSE when the bytes only reached the
+  // storage adapter. The web build's own sync pulls into OPFS from OUTSIDE
+  // Obsidian's adapter (boot.js), so a path can exist on disk while the
+  // index (getAbstractFileByPath/getFiles) stays blind to it until a page
+  // reload — an exclusive createBinary then dies with "File already
+  // exists." even though the index check passed, killing the whole sync.
+  //
+  // Callers MUST NOT record synced/mirror for an index-invisible write:
+  // planSync reads L⊥ + S=hash + R=hash as "we deleted it, server
+  // unchanged" and pushes a DELETION. Leaving S⊥ re-downloads the same
+  // bytes next run (idempotent) until a reload makes the file visible;
+  // L=R + S⊥ then settles via setSynced with no network at all.
   async writeVaultBytes(path, buf) {
     path = normalizePath(path);
     var slash = path.lastIndexOf('/');
@@ -974,8 +1018,29 @@ var NeonSyncPlugin = class extends PluginBase {
     var existing = this.app.vault.getAbstractFileByPath(path);
     if (existing) {
       await this.app.vault.modifyBinary(existing, buf);
-    } else {
+      return true;
+    }
+    try {
       await this.app.vault.createBinary(path, buf);
+      return true;
+    } catch (err) {
+      // The index may have caught up while we were colliding (Obsidian
+      // processed the on-disk file in the meantime) — modify it if so.
+      var raced = this.app.vault.getAbstractFileByPath(path);
+      if (raced) {
+        await this.app.vault.modifyBinary(raced, buf);
+        return true;
+      }
+      // Disk says the path is taken but the index has no TFile: overwrite
+      // through the adapter (non-exclusive) and report "index-invisible".
+      var adapter = this.app.vault.adapter;
+      var msg = String((err && err.message) || err);
+      var isExists = /already exists/i.test(msg) || (err && err.code === 'EEXIST');
+      if (isExists && adapter && typeof adapter.writeBinary === 'function') {
+        await adapter.writeBinary(path, buf);
+        return false;
+      }
+      throw err;
     }
   }
 
@@ -1015,15 +1080,20 @@ var NeonSyncPlugin = class extends PluginBase {
 
     if (localBytes) {
       var copyPath = await this.uniqueCopyPath(path, ctx.stamp);
-      await this.writeVaultBytes(copyPath, localBytes);
+      var copyVisible = await this.writeVaultBytes(copyPath, localBytes);
+      if (!copyVisible) ctx.summary.reloadNeeded++;
       if (copyPath.length <= MAX_PUSHABLE_PATH) {
         var copyHash = await sha256Hex(localBytes);
+        // pushOps re-reads every change through the index, so an
+        // index-invisible copy drops out of THIS push round on its own and
+        // gets pushed as a new file after the page reload.
         ctx.copyChanges.push({ path: copyPath, hash: copyHash, size: localBytes.byteLength, baseHash: null });
-        if (!ctx.pullOnly) {
-          // Mark the copy synced ONLY when this run will push it. In a
-          // pull-only run the copy must stay S⊥ so the NEXT full sync pushes
-          // it as a new file (S=hash + server⊥ would read as "server deleted
-          // it, conform" and remove the preserved copy).
+        if (!ctx.pullOnly && copyVisible) {
+          // Mark the copy synced ONLY when this run will push it AND the
+          // index can see it. In a pull-only run (or after an adapter-only
+          // write) the copy must stay S⊥ so the NEXT full sync pushes it as
+          // a new file (S=hash + server⊥ would read as "server deleted it,
+          // conform" and remove the preserved copy).
           this.settings.synced[copyPath] = copyHash;
           await this.rememberFile(copyPath);
         }
@@ -1034,9 +1104,15 @@ var NeonSyncPlugin = class extends PluginBase {
       await this.deleteVaultPath(path);
     } else {
       var buf = await this._activeRemote.blob(server.hash);
-      await this.writeVaultBytes(path, buf);
-      this.settings.synced[path] = server.hash;
-      await this.rememberFile(path);
+      var origVisible = await this.writeVaultBytes(path, buf);
+      if (origVisible) {
+        this.settings.synced[path] = server.hash;
+        await this.rememberFile(path);
+      } else {
+        // Index-blind conform: S keeps its old value; the next run replays
+        // this conflict (same bytes) until a page reload exposes the file.
+        ctx.summary.reloadNeeded++;
+      }
     }
 
     ctx.summary.conflicts++;
@@ -1219,8 +1295,18 @@ class NeonSyncSettingTab extends PluginSettingTabBase {
       .setName('Password')
       .setDesc('Claim/unlock password. Stored in this plugin\'s data.json so tokens can refresh; leave empty to use a manually pasted token only.')
       .addText(function (t) {
-        t.setInputType('password')
-          .setValue(s.password)
+        // setInputType is missing on older Obsidian bundles (e.g. the pinned
+        // mobile build behind the web app): an unguarded call threw
+        // "t.setInputType is not a function" and killed display() halfway —
+        // everything BELOW Password (Token, Status, Connect, Sync, Pull)
+        // never rendered. "No Connect button", round two. Guard it, fall
+        // back to the raw input element, never let cosmetics abort the tab.
+        if (typeof t.setInputType === 'function') {
+          t.setInputType('password');
+        } else if (t.inputEl && typeof t.inputEl.setAttribute === 'function') {
+          t.inputEl.setAttribute('type', 'password');
+        }
+        t.setValue(s.password)
           .onChange(async function (v) {
             s.password = v;
             await plugin.saveSettings();
