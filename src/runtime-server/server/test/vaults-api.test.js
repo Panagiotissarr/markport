@@ -334,3 +334,67 @@ test('vault/:id/* route serves the mobile shell for a nested note deep link', as
   const body = await response.text();
   assert.match(body, /shell/);
 });
+
+test('/{VAULT_NAME} short link redirects to /vault/{VAULT_NAME}', async (t) => {
+  const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'obsidian-web-'));
+  t.after(() => fsp.rm(tmp, { recursive: true, force: true }));
+
+  const clientMobilePath = path.join(tmp, 'client-mobile');
+  await fsp.mkdir(clientMobilePath);
+  await fsp.writeFile(path.join(clientMobilePath, 'index.html'), '<html><body>shell</body></html>');
+
+  const server = await startTestServer({
+    clientMobilePath,
+    obsidianPath: path.join(tmp, 'obsidian'),
+    registryPath: path.join(tmp, 'vaults.json'),
+    vaultPath: tmp,
+  });
+  t.after(server.close);
+
+  // A bare single-segment path is a vault-name short link → 302 to the
+  // canonical /vault/<name> URL (same rule as starter-url.js's
+  // shortPathSegment, mirrored by the CF worker + vercel.json).
+  const response = await fetch(server.baseUrl + '/myvault', { redirect: 'manual' });
+  assert.equal(response.status, 302);
+  assert.equal(new URL(response.headers.get('location'), server.baseUrl).pathname, '/vault/myvault');
+
+  // Trailing slash is the same short link.
+  const slash = await fetch(server.baseUrl + '/myvault/', { redirect: 'manual' });
+  assert.equal(slash.status, 302);
+  assert.equal(new URL(slash.headers.get('location'), server.baseUrl).pathname, '/vault/myvault');
+});
+
+test('/{VAULT_NAME} short link never swallows reserved routes, files, or multi-segment paths', async (t) => {
+  const tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'obsidian-web-'));
+  t.after(() => fsp.rm(tmp, { recursive: true, force: true }));
+
+  const clientMobilePath = path.join(tmp, 'client-mobile');
+  await fsp.mkdir(clientMobilePath);
+  await fsp.writeFile(path.join(clientMobilePath, 'index.html'), '<html><body>shell</body></html>');
+
+  const server = await startTestServer({
+    clientMobilePath,
+    obsidianPath: path.join(tmp, 'obsidian'),
+    registryPath: path.join(tmp, 'vaults.json'),
+    vaultPath: tmp,
+  });
+  t.after(server.close);
+
+  // Registered routes keep serving the shell (200, not a redirect).
+  for (const p of ['/mobile', '/starter']) {
+    const r = await fetch(server.baseUrl + p, { redirect: 'manual' });
+    assert.equal(r.status, 200, p);
+  }
+
+  // Dot-files are files, not vault names: unknown ones keep 404-ing.
+  const dotFile = await fetch(server.baseUrl + '/nope.txt', { redirect: 'manual' });
+  assert.equal(dotFile.status, 404);
+
+  // Reserved dot-less roots fall through (404), never /vault/api etc.
+  const reserved = await fetch(server.baseUrl + '/api', { redirect: 'manual' });
+  assert.notEqual(reserved.status, 302);
+
+  // Multi-segment paths are untouched (not short links).
+  const deep = await fetch(server.baseUrl + '/foo/bar', { redirect: 'manual' });
+  assert.equal(deep.status, 404);
+});

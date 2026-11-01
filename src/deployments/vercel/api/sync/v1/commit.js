@@ -56,7 +56,12 @@ export const web = withErrors(async (request) => {
     return json({ error: 'missing blobs', hashes: missing }, 422);
   }
 
-  const result = await store.commit(vault, changes, deletions);
+  // checkBlobs: the store re-verifies presence inside the commit transaction
+  // and answers EMISSING (→ the same 422 shape above) if the blob GC removed
+  // content between the check above and the write. Without it a file row
+  // could point at a deleted blob — a path that 404s on every later pull and
+  // that no client can repair on its own.
+  const result = await store.commit(vault, changes, deletions, { checkBlobs: true });
   return json(result);
 });
 

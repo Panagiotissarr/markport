@@ -208,9 +208,44 @@ function isInternalPath(path) {
   return false;
 }
 
+// Host of a "host[:port]" string (bracketed IPv6 handled).
+function hostOf(hostPort) {
+  var hp = String(hostPort === null || hostPort === undefined ? '' : hostPort);
+  if (hp.charAt(0) === '[') {
+    var end = hp.indexOf(']');
+    return end === -1 ? hp : hp.slice(1, end);
+  }
+  return hp.split(':')[0];
+}
+
+// Local/dev hostnames: plain HTTP is the overwhelming default for these
+// (runtime-server and vercel dev.js both listen on http://localhost:3000).
+// Sending https:// at a non-TLS port fails the handshake with exactly the
+// error users otherwise see: ERR_SSL_VERSION_OR_CIPHER_MISMATCH.
+function isLocalHostName(host) {
+  var h = String(host === null || host === undefined ? '' : host).toLowerCase();
+  if (h === 'localhost' || h === '::1') return true;
+  if (/^127\./.test(h)) return true;
+  if (/^192\.168\./.test(h)) return true;
+  if (/^10\./.test(h)) return true;
+  if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(h)) return true;
+  if (/\.local(host)?$/.test(h)) return true;
+  return false;
+}
+
+// Trim + strip trailing slashes + supply a scheme when missing: http:// for
+// local/dev hosts, https:// otherwise. Explicit schemes are kept verbatim,
+// so hand-edited data.json values ("localhost:3000/") become usable origins
+// instead of dying inside requestUrl.
+function normalizeBaseUrl(raw) {
+  var s = String(raw === null || raw === undefined ? '' : raw).trim().replace(/\/+$/, '');
+  if (!s) return '';
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) return s;
+  return (isLocalHostName(hostOf(s.split('/')[0])) ? 'http://' : 'https://') + s;
+}
+
 function joinUrl(baseUrl, path) {
-  var base = String(baseUrl || '').replace(/\/+$/, '');
-  return base + path;
+  return normalizeBaseUrl(baseUrl) + path;
 }
 
 // Uint8Array/ArrayBuffer → base64, chunked (String.fromCharCode.apply blows
@@ -261,6 +296,107 @@ function pushUnsupported(message) {
   return e;
 }
 
+// ── claimed-URL parsing (mirrors src/client-mobile/starter-url.js) ─────────
+// The settings screen has ONE "Vault URL" field: paste the link you claimed
+// in the browser — https://app/vault/<name>, the short link https://app/<name>,
+// a note deep link under either, or just <name> — and it fills Server URL +
+// Vault name. Same name charset as the server's claim endpoint, and the same
+// short-link exclusions the web routers 302 on (dot-files, reserved routes),
+// so any link that works in the browser works here.
+
+var VAULT_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+var RESERVED_ROOT_SEGMENTS = [
+  'api', 'sync', 'starter', 'vault', 'mobile',
+  'client-mobile', 'obsidian-mobile', 'i18n', 'lib',
+  'public', 'sandbox', 'system-plugins', 'index',
+];
+
+/**
+ * parseVaultUrl(raw) — never throws.
+ * → { ok:true, baseUrl:<origin|null>, vault:<name> }  (baseUrl null = keep
+ *   the already-configured Server URL; the input carried no origin)
+ * → { ok:false, error:<message> }
+ */
+function parseVaultUrl(raw) {
+  var s = String(raw === null || raw === undefined ? '' : raw).trim();
+  if (!s) return { ok: false, error: 'Enter the vault URL or name.' };
+
+  var baseUrl = null;
+  var rest = s;
+
+  var m = /^https?:\/\/[^\/?#\s]+/i.exec(s);
+  if (m) {
+    // Absolute http(s) URL → origin + remainder (query/hash dropped below).
+    baseUrl = m[0].replace(/\/+$/, '');
+    rest = s.slice(m[0].length);
+  } else if (s.charAt(0) === '/' && s.charAt(1) === '/') {
+    return { ok: false, error: 'Enter an http(s) URL or a vault name.' };
+  } else if (s.indexOf('/') !== -1 &&
+             (/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+(:\d+)?\//.test(s) || /^localhost(:\d+)?\//i.test(s))) {
+    // Scheme-less host prefix ("notes.sarris.dev/vault/x", "localhost:3000/x")
+    // — assume https for public hosts, http for local/dev hosts (a plain-HTTP
+    // server behind an https:// URL fails with ERR_SSL_VERSION_OR_CIPHER_MISMATCH).
+    // Checked BEFORE the scheme reject below so "localhost:3000/…" isn't
+    // mistaken for a "localhost:" scheme.
+    var hostPart = s.slice(0, s.indexOf('/'));
+    baseUrl = (isLocalHostName(hostOf(hostPart)) ? 'http://' : 'https://') + hostPart;
+    rest = s.slice(hostPart.length);
+  } else if (/^[a-z][a-z0-9+.-]*:/i.test(s)) {
+    // Any other scheme (obsidian:, javascript:, data:, mailto:, …) — refuse.
+    return { ok: false, error: 'Enter an http(s) URL or a vault name.' };
+  }
+
+  rest = rest.split('?')[0].split('#')[0];
+  rest = rest.replace(/^\/+/, '').replace(/\/+$/, '');
+
+  if (!rest) {
+    return { ok: false, error: baseUrl
+      ? 'That link has no vault name — paste the /vault/<name> URL.'
+      : 'Enter the vault URL or name.' };
+  }
+
+  var slash = rest.indexOf('/');
+  var first = slash === -1 ? rest : rest.slice(0, slash);
+  var tail = slash === -1 ? '' : rest.slice(slash + 1);
+
+  var name;
+  var shortLink = false; // name came from a URL path segment → short-link rules
+  if (first.toLowerCase() === 'vault' && slash !== -1) {
+    // Canonical /vault/<name>[/<note path>] — the note part is irrelevant here.
+    var vslash = tail.indexOf('/');
+    name = vslash === -1 ? tail : tail.slice(0, vslash);
+  } else if (baseUrl) {
+    // Single segment or "segment/note…" straight under the origin: the
+    // short-link form — accept it only when the web routers would 302 it.
+    name = first;
+    shortLink = true;
+  } else {
+    // Relative input ("vault/<name>", "/<name>", "<name>/note", "<name>").
+    name = first;
+  }
+
+  try { name = decodeURIComponent(name); } catch (_) {
+    return { ok: false, error: 'That vault name has bad %-encoding.' };
+  }
+  if (shortLink) {
+    if (name.indexOf('.') !== -1) {
+      return { ok: false, error: 'That link looks like a file, not a vault — paste the /vault/<name> URL.' };
+    }
+    var c0 = name.charAt(0);
+    if (c0 === '.' || c0 === '_' || c0 === '~') {
+      return { ok: false, error: 'That path is not a vault link.' };
+    }
+    if (RESERVED_ROOT_SEGMENTS.indexOf(name.toLowerCase()) !== -1) {
+      return { ok: false, error: '"' + name + '" is an app route, not a vault name.' };
+    }
+  }
+  if (!VAULT_NAME_RE.test(name)) {
+    return { ok: false, error: 'Vault names use letters, numbers, dot, dash or underscore (max 64).' };
+  }
+  return { ok: true, baseUrl: baseUrl, vault: name };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // HTTP via app.requestUrl — the only transport Obsidian gives us that is
 // CORS-free on both desktop and mobile. requestUrl's exact non-2xx behavior
@@ -268,7 +404,7 @@ function pushUnsupported(message) {
 // through http() below: callers always get {status, text, json, arrayBuffer}.
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function http(opts) {
+async function httpOnce(opts) {
   if (!requestUrl) throw new Error('requestUrl is unavailable (not running inside Obsidian)');
   var res;
   try {
@@ -281,18 +417,116 @@ async function http(opts) {
     }
   }
   var status = res.status;
-  var text = typeof res.text === 'string' ? res.text : '';
-  var json = res.json;
-  if (json === undefined || json === null) {
-    if (text) {
-      try { json = JSON.parse(text); } catch (_) { json = null; }
-    } else {
-      json = null;
-    }
+  // ── read the body DEFENSIVELY ─────────────────────────────────────────
+  // Obsidian's response object exposes `text` / `json` / `arrayBuffer` as
+  // GETTERS, and the `json` getter THROWS a SyntaxError for any body that
+  // is not JSON. A blob GET legitimately returns raw note bytes (a CSS
+  // snippet starts with "/* … */"), so a bare `var json = res.json` killed
+  // the pull with
+  //     SyntaxError: Unexpected token '/', "/*\nTHIS IS"... is not valid JSON
+  // — the body was a note, not an error. Every accessor is wrapped now:
+  // a body-format mismatch must never abort an HTTP call.
+  var text = '';
+  try {
+    if (typeof res.text === 'string') text = res.text;
+  } catch (_) {
+    text = ''; // binary body — decoders can throw too
   }
-  var ab = res.arrayBuffer;
-  if (typeof ab === 'function') ab = ab.call(res); // tolerate method-style access
+  var json = null;
+  try {
+    if (res.json !== undefined && res.json !== null) json = res.json;
+  } catch (_) {
+    json = null;
+  }
+  if (json === null && text) {
+    try { json = JSON.parse(text); } catch (_) { json = null; }
+  }
+  var ab = null;
+  try {
+    ab = res.arrayBuffer;
+    if (typeof ab === 'function') ab = ab.call(res); // tolerate method-style access
+  } catch (_) {
+    ab = null;
+  }
   return { status: status, text: text, json: json, arrayBuffer: ab };
+}
+
+// Suffix for non-2xx errors: a short body excerpt plus a plain-language hint
+// for the way a BROKEN deployment answers (Vercel returns
+// FUNCTION_INVOCATION_FAILED / its "An error occurred" page when the
+// deployed entry point cannot serve the request) — otherwise a bare
+// "manifest: HTTP 500" sends the user hunting in the plugin.
+function statusDetail(res) {
+  var t = res && typeof res.text === 'string' ? res.text : '';
+  var flat = t.replace(/\s+/g, ' ').trim();
+  var detail = '';
+  if (/FUNCTION_INVOCATION_FAILED|NO_RESPONSE_FROM_FUNCTION|An error occurred with your deployment|DEPLOYMENT_NOT_FOUND/i.test(flat)) {
+    detail = ' — the deployment crashed before answering (wrong entry point or missing runtime config)';
+  }
+  if (flat) detail += ' [' + flat.slice(0, 140) + ']';
+  return detail;
+}
+
+// Transient-failure retries — the same hardening the browser client's
+// remote-client.js got: 3 attempts, only for transport-level throws and
+// 429/5xx, exponential backoff with jitter. Every endpoint here is safe to
+// re-run: blob GET/PUT are content-addressed (idempotent), commit carries
+// baseHash CAS (a double-apply is impossible — the second attempt 409s and
+// the normal conflict path handles it), claim is rate-limited anyway.
+var HTTP_MAX_ATTEMPTS = 3;
+var RETRYABLE_STATUS = { 429: 1, 500: 1, 502: 1, 503: 1, 504: 1 };
+
+function sleepMs(ms) {
+  return new Promise(function (resolve) { setTimeout(resolve, ms); });
+}
+
+function retryDelayMs(attempt) {
+  var base = 400 * Math.pow(2, attempt); // 400ms, 800ms
+  return Math.round(base * (0.7 + Math.random() * 0.6)); // ±30% jitter
+}
+
+async function http(opts) {
+  var lastErr = null;
+  var lastRes = null;
+  for (var attempt = 0; attempt < HTTP_MAX_ATTEMPTS; attempt++) {
+    if (attempt > 0) await sleepMs(retryDelayMs(attempt - 1));
+    var res;
+    try {
+      res = await httpOnce(opts);
+    } catch (err) {
+      lastErr = err; // transport-level (timeout, DNS, reset) → transient
+      lastRes = null;
+      continue;
+    }
+    if (RETRYABLE_STATUS[res.status] === 1 && attempt < HTTP_MAX_ATTEMPTS - 1) {
+      lastErr = null;
+      lastRes = res;
+      continue;
+    }
+    return res;
+  }
+  // Exhausted: a retryable STATUS is returned raw so callers surface their
+  // own message (429 "wait a minute", 503 "not configured"); transport
+  // errors throw — with a hint for the mistakes that produce them most
+  // often (https:// at a plain-HTTP server, server down, typo'd hostname).
+  if (lastRes) return lastRes;
+  throw withTransportHint(lastErr, opts && opts.url);
+}
+
+function withTransportHint(err, url) {
+  var msg = String((err && err.message) || err || '');
+  var hint = '';
+  if (/ERR_SSL|ERR_CERT|SSL|handshake/i.test(msg) && /^https:/i.test(String(url || ''))) {
+    hint = ' — the HTTPS handshake was rejected: the server is probably plain HTTP. Use http:// in the URL (localhost / 127.* / 192.168.* / 10.* / 172.16-31.* / *.local are assumed http:// automatically).';
+  } else if (/ERR_CONNECTION_REFUSED/i.test(msg)) {
+    hint = ' — nothing is listening at that address; is the server running, and is the port right?';
+  } else if (/ERR_NAME_NOT_RESOLVED/i.test(msg)) {
+    hint = ' — the hostname does not resolve; check the Server URL for typos.';
+  }
+  if (hint && err && typeof err.message === 'string' && err.message.indexOf('—') === -1) {
+    err.message = msg + hint;
+  }
+  return err;
 }
 
 // ── remote: the /sync/v1 client (mirror of remote-client.js over http()) ───
@@ -325,7 +559,7 @@ function createRemote(settings) {
       '?' + vaultQuery() + (after ? 'after=' + encodeURIComponent(after) : '');
     var res = await http({ url: url, method: 'GET', headers: authHeaders() });
     if (res.status === 401) throw authError('manifest: authentication failed (401)');
-    if (res.status !== 200) throw new Error('manifest: HTTP ' + res.status);
+    if (res.status !== 200) throw new Error('manifest: HTTP ' + res.status + statusDetail(res));
     return res.json;
   }
 
@@ -359,7 +593,7 @@ function createRemote(settings) {
       if (res.status === 416) break;
       if (res.status === 401) throw authError('blob range: authentication failed (401)');
       if (res.status !== 206 && res.status !== 200) {
-        throw new Error('blob range: HTTP ' + res.status + ' at offset ' + start);
+        throw new Error('blob range: HTTP ' + res.status + ' at offset ' + start + statusDetail(res));
       }
       var buf = res.arrayBuffer;
       parts.push(new Uint8Array(buf));
@@ -381,7 +615,7 @@ function createRemote(settings) {
     var res = await http({ url: blobUrl(hash), method: 'GET', headers: authHeaders() });
     if (res.status === 401) throw authError('blob: authentication failed (401)');
     if (res.status === 413) return blobRanged(hash); // server full-GET cap
-    if (res.status !== 200) throw new Error('blob: HTTP ' + res.status + ' for hash ' + hash);
+    if (res.status !== 200) throw new Error('blob: HTTP ' + res.status + ' for hash ' + hash + statusDetail(res));
     return res.arrayBuffer;
   }
 
@@ -408,7 +642,7 @@ function createRemote(settings) {
       }
       if (res.status === 409) throw new Error('putBlob: content does not match hash ' + hash);
       if (res.status !== 200) {
-        throw new Error('putBlob: HTTP ' + res.status + ' (chunk ' + i + '/' + total + ')');
+        throw new Error('putBlob: HTTP ' + res.status + ' (chunk ' + i + '/' + total + ')' + statusDetail(res));
       }
     }
     return { hash: hash, stored: true };
@@ -425,7 +659,7 @@ function createRemote(settings) {
     if (res.status === 501 || res.status === 404) {
       throw pushUnsupported('missingBlobs: HTTP ' + res.status);
     }
-    if (res.status !== 200) throw new Error('missingBlobs: HTTP ' + res.status);
+    if (res.status !== 200) throw new Error('missingBlobs: HTTP ' + res.status + statusDetail(res));
     return (res.json && res.json.missing) || [];
   }
 
@@ -444,7 +678,7 @@ function createRemote(settings) {
       e.hashes = (res.json && res.json.hashes) || [];
       throw e;
     }
-    if (res.status !== 200) throw new Error('commit: HTTP ' + res.status);
+    if (res.status !== 200) throw new Error('commit: HTTP ' + res.status + statusDetail(res));
     return res.json;
   }
 
@@ -464,7 +698,7 @@ async function vaultStatus(settings) {
   var url = joinUrl(settings.baseUrl, '/sync/v1/vaults/' + encodeURIComponent(settings.vault));
   var res = await http({ url: url, method: 'GET', headers: { 'cache-control': 'no-store' } });
   if (res.status === 503) throw new Error('server not configured (503)');
-  if (res.status !== 200) throw new Error('vault status: HTTP ' + res.status);
+  if (res.status !== 200) throw new Error('vault status: HTTP ' + res.status + statusDetail(res));
   return res.json; // {name, claimed}
 }
 
@@ -483,7 +717,7 @@ async function claimOrUnlock(settings) {
   }
   if (res.status === 503) throw new Error('server not configured (503)');
   if (res.status !== 200 && res.status !== 201) {
-    throw new Error('claim/unlock: HTTP ' + res.status);
+    throw new Error('claim/unlock: HTTP ' + res.status + statusDetail(res));
   }
   if (!res.json || !res.json.token) throw new Error('no token in server response');
   return res.json.token;
@@ -497,6 +731,15 @@ var DEFAULTS = {
   baseUrl: '',
   vault: '',
   password: '',
+  // Persisting the password writes it into
+  // `<vault>/.obsidian/plugins/markport-neon-sync/data.json` IN PLAINTEXT.
+  // That folder is inside the vault, and vaults get copied around: cloud
+  // backups, Syncthing/iCloud, another sync tool — and the web build's own
+  // sync pushes dot-paths, so the password can reach the sync server itself.
+  // Off by default: the password stays in memory for this session and the
+  // stored `token` (which expires, and is scoped to ONE vault) keeps sync
+  // working across restarts. Opt in when unattended refresh matters more.
+  rememberPassword: false,
   token: '',
   intervalMinutes: 0, // 0 = manual sync only
   synced: {},         // S: {path: hash} — last-synced hashes (CAS bases)
@@ -509,12 +752,32 @@ var NeonSyncPlugin = class extends PluginBase {
     this.syncing = false;
 
     this.addRibbonIcon('refresh-cw', 'Neon sync', () => {
-      this.doSync();
+      // Fire-and-forget: doSync reports failures via Notice + console.error;
+      // an uncaught rejection here would surface as "Uncaught (in promise)"
+      // noise in the dev console (especially in the web build).
+      this.doSync().catch(() => { /* already reported */ });
+    });
+    this.addCommand({
+      id: 'neon-connect',
+      name: 'Connect / unlock vault (password → token)',
+      callback: async () => {
+        try {
+          await this.connect();
+          new Notice('Neon sync: connected, token saved');
+        } catch (err) {
+          new Notice('Neon sync: ' + ((err && err.message) || err));
+        }
+      },
     });
     this.addCommand({
       id: 'neon-sync-now',
       name: 'Sync now',
-      callback: () => this.doSync(),
+      callback: () => { this.doSync().catch(() => { /* already reported */ }); },
+    });
+    this.addCommand({
+      id: 'neon-pull-only',
+      name: 'Pull only (download server changes, no push)',
+      callback: () => { this.doSync(false, true).catch(() => { /* already reported */ }); },
     });
     this.addSettingTab(new NeonSyncSettingTab(this.app, this));
     this.startInterval();
@@ -539,10 +802,31 @@ var NeonSyncPlugin = class extends PluginBase {
           : DEFAULTS[k];
       }
     }
+    // Tolerate hand-edited data.json: "localhost:3000/" or a missing scheme
+    // normalizes to a usable origin (http:// for local/dev hosts, https://
+    // otherwise) instead of failing deep inside requestUrl.
+    this.settings.baseUrl = normalizeBaseUrl(this.settings.baseUrl);
+    // A password written by an older version (or hand-edited in) stays usable
+    // for THIS session but is not written back — the next saveSettings drops
+    // it from disk, so the credential stops travelling with the vault.
+    this._passwordFromDisk = !!this.settings.password && this.settings.rememberPassword !== true;
+    if (this._passwordFromDisk) {
+      console.warn('[neon-sync] password found in data.json — using it for this session, ' +
+        'then removing it from disk (enable "Remember password" to keep it)');
+    }
   }
 
   async saveSettings() {
-    await this.saveData(this.settings);
+    // Everything except the password is written as-is; the password only
+    // when "Remember password" is on. See DEFAULTS.rememberPassword for why
+    // this is opt-in (data.json lives inside the vault and gets copied).
+    var data = {};
+    for (var k in this.settings) {
+      if (!Object.prototype.hasOwnProperty.call(this.settings, k)) continue;
+      if (k === 'password' && this.settings.rememberPassword !== true) continue;
+      data[k] = this.settings[k];
+    }
+    await this.saveData(data);
   }
 
   startInterval() {
@@ -552,7 +836,7 @@ var NeonSyncPlugin = class extends PluginBase {
     }
     var mins = Number(this.settings.intervalMinutes) || 0;
     if (mins > 0) {
-      this._timer = setInterval(() => { this.doSync(true); }, mins * 60 * 1000);
+      this._timer = setInterval(() => { this.doSync(true).catch(() => { /* already reported */ }); }, mins * 60 * 1000);
       this.registerInterval(this._timer);
     }
   }
@@ -582,15 +866,17 @@ var NeonSyncPlugin = class extends PluginBase {
     return s.token;
   }
 
-  async doSync(silent) {
+  async doSync(silent, pullOnly) {
     if (this.syncing) return { skipped: true, reason: 'busy' };
-    if (!silent) new Notice('Neon sync: starting…');
+    if (!silent) new Notice(pullOnly ? 'Neon sync: pulling…' : 'Neon sync: starting…');
     this.syncing = true;
     try {
-      var summary = await this.runSync();
+      var summary = await this.runSync(pullOnly);
       new Notice('Neon sync: ↓ ' + summary.downloaded + ' ↑ ' + summary.pushed +
         ' deletions ' + summary.deleted +
         (summary.conflicts ? ' · conflicts ' + summary.conflicts : '') +
+        (summary.reloadNeeded ? ' · reload the page to see ' + summary.reloadNeeded + ' file(s)' : '') +
+        (pullOnly ? ' (pull only)' : '') +
         (summary.pushSupported === false ? ' (server is pull-only)' : ''));
       return summary;
     } catch (err) {
@@ -608,7 +894,7 @@ var NeonSyncPlugin = class extends PluginBase {
     }
   }
 
-  async runSync() {
+  async runSync(pullOnly) {
     var s = this.settings;
     var app = this.app;
     await this.ensureToken();
@@ -616,17 +902,18 @@ var NeonSyncPlugin = class extends PluginBase {
     var remote = createRemote(s);
     this._activeRemote = remote;
     try {
-      return await this.runSyncWith(remote);
+      return await this.runSyncWith(remote, pullOnly);
     } finally {
       this._activeRemote = null;
     }
   }
 
-  async runSyncWith(remote) {
+  async runSyncWith(remote, pullOnly) {
     var s = this.settings;
     var app = this.app;
     var ctx = {
       stamp: stampNow(),
+      pullOnly: !!pullOnly,
       copyChanges: [],
       lateConflicts: [],
       pushSupported: true,
@@ -637,6 +924,7 @@ var NeonSyncPlugin = class extends PluginBase {
         conflicts: 0,
         conflictPaths: [],
         skipped: 0,
+        reloadNeeded: 0,
         pushSupported: true,
       },
     };
@@ -676,9 +964,14 @@ var NeonSyncPlugin = class extends PluginBase {
     for (var d = 0; d < plan.downloads.length; d++) {
       var dl = plan.downloads[d];
       var buf = await remote.blob(dl.hash);
-      await this.writeVaultBytes(dl.path, buf);
-      s.synced[dl.path] = dl.hash;
-      await this.rememberFile(dl.path);
+      var visible = await this.writeVaultBytes(dl.path, buf);
+      if (visible) {
+        s.synced[dl.path] = dl.hash;
+        await this.rememberFile(dl.path);
+      } else {
+        // Index-blind write (web build): S stays ⊥ — see writeVaultBytes.
+        ctx.summary.reloadNeeded++;
+      }
       ctx.summary.downloaded++;
     }
 
@@ -700,19 +993,45 @@ var NeonSyncPlugin = class extends PluginBase {
     }
 
     // ── push ──────────────────────────────────────────────────────────────
-    try {
-      await this.pushOps(ctx, plan.pushChanges, plan.pushDeletions);
-      for (var lc = 0; lc < ctx.lateConflicts.length; lc++) {
-        await this.resolveConflict(ctx, ctx.lateConflicts[lc].path, ctx.lateConflicts[lc]);
+    // Skipped entirely in pull-only mode: pushChanges/pushDeletions simply
+    // stay unapplied (synced/mirror were not touched for them), so the next
+    // full sync picks them up.
+    if (!pullOnly) {
+      // "L⊥ + S=R" reads as "we deleted it" — but in the web build a file
+      // can sit in OPFS while Obsidian's index is still blind to it (the
+      // app's own pulls write behind the adapter). Pushing that deletion
+      // would wipe the note off the SERVER. Confirm with the storage
+      // adapter (a local stat, no network) before deleting anything.
+      var deletions = plan.pushDeletions;
+      var adapter = app.vault.adapter;
+      if (adapter && typeof adapter.exists === 'function' && deletions.length > 0) {
+        var confirmed = [];
+        for (var dd = 0; dd < deletions.length; dd++) {
+          var onDisk = false;
+          try {
+            onDisk = await adapter.exists(normalizePath(deletions[dd].path));
+          } catch (_) {
+            onDisk = false; // adapter can't tell → trust the index (desktop norm)
+          }
+          if (onDisk) ctx.summary.reloadNeeded++;
+          else confirmed.push(deletions[dd]);
+        }
+        deletions = confirmed;
       }
-      if (ctx.pushSupported && ctx.copyChanges.length > 0) {
-        await this.pushOps(ctx, ctx.copyChanges, []);
-      }
-    } catch (e) {
-      if (e && e.code === 'EPUSH') {
-        ctx.pushSupported = false; // old pull-only server
-      } else {
-        throw e;
+      try {
+        await this.pushOps(ctx, plan.pushChanges, deletions);
+        for (var lc = 0; lc < ctx.lateConflicts.length; lc++) {
+          await this.resolveConflict(ctx, ctx.lateConflicts[lc].path, ctx.lateConflicts[lc]);
+        }
+        if (ctx.pushSupported && ctx.copyChanges.length > 0) {
+          await this.pushOps(ctx, ctx.copyChanges, []);
+        }
+      } catch (e) {
+        if (e && e.code === 'EPUSH') {
+          ctx.pushSupported = false; // old pull-only server
+        } else {
+          throw e;
+        }
       }
     }
     ctx.summary.pushSupported = ctx.pushSupported;
@@ -741,6 +1060,19 @@ var NeonSyncPlugin = class extends PluginBase {
     } catch (_) { /* raced with another writer — fine */ }
   }
 
+  // Write bytes at `path`. Returns TRUE when the vault INDEX knows the file
+  // afterwards (desktop/mobile norm), FALSE when the bytes only reached the
+  // storage adapter. The web build's own sync pulls into OPFS from OUTSIDE
+  // Obsidian's adapter (boot.js), so a path can exist on disk while the
+  // index (getAbstractFileByPath/getFiles) stays blind to it until a page
+  // reload — an exclusive createBinary then dies with "File already
+  // exists." even though the index check passed, killing the whole sync.
+  //
+  // Callers MUST NOT record synced/mirror for an index-invisible write:
+  // planSync reads L⊥ + S=hash + R=hash as "we deleted it, server
+  // unchanged" and pushes a DELETION. Leaving S⊥ re-downloads the same
+  // bytes next run (idempotent) until a reload makes the file visible;
+  // L=R + S⊥ then settles via setSynced with no network at all.
   async writeVaultBytes(path, buf) {
     path = normalizePath(path);
     var slash = path.lastIndexOf('/');
@@ -748,8 +1080,29 @@ var NeonSyncPlugin = class extends PluginBase {
     var existing = this.app.vault.getAbstractFileByPath(path);
     if (existing) {
       await this.app.vault.modifyBinary(existing, buf);
-    } else {
+      return true;
+    }
+    try {
       await this.app.vault.createBinary(path, buf);
+      return true;
+    } catch (err) {
+      // The index may have caught up while we were colliding (Obsidian
+      // processed the on-disk file in the meantime) — modify it if so.
+      var raced = this.app.vault.getAbstractFileByPath(path);
+      if (raced) {
+        await this.app.vault.modifyBinary(raced, buf);
+        return true;
+      }
+      // Disk says the path is taken but the index has no TFile: overwrite
+      // through the adapter (non-exclusive) and report "index-invisible".
+      var adapter = this.app.vault.adapter;
+      var msg = String((err && err.message) || err);
+      var isExists = /already exists/i.test(msg) || (err && err.code === 'EEXIST');
+      if (isExists && adapter && typeof adapter.writeBinary === 'function') {
+        await adapter.writeBinary(path, buf);
+        return false;
+      }
+      throw err;
     }
   }
 
@@ -789,12 +1142,23 @@ var NeonSyncPlugin = class extends PluginBase {
 
     if (localBytes) {
       var copyPath = await this.uniqueCopyPath(path, ctx.stamp);
-      await this.writeVaultBytes(copyPath, localBytes);
+      var copyVisible = await this.writeVaultBytes(copyPath, localBytes);
+      if (!copyVisible) ctx.summary.reloadNeeded++;
       if (copyPath.length <= MAX_PUSHABLE_PATH) {
         var copyHash = await sha256Hex(localBytes);
+        // pushOps re-reads every change through the index, so an
+        // index-invisible copy drops out of THIS push round on its own and
+        // gets pushed as a new file after the page reload.
         ctx.copyChanges.push({ path: copyPath, hash: copyHash, size: localBytes.byteLength, baseHash: null });
-        this.settings.synced[copyPath] = copyHash;
-        await this.rememberFile(copyPath);
+        if (!ctx.pullOnly && copyVisible) {
+          // Mark the copy synced ONLY when this run will push it AND the
+          // index can see it. In a pull-only run (or after an adapter-only
+          // write) the copy must stay S⊥ so the NEXT full sync pushes it as
+          // a new file (S=hash + server⊥ would read as "server deleted it,
+          // conform" and remove the preserved copy).
+          this.settings.synced[copyPath] = copyHash;
+          await this.rememberFile(copyPath);
+        }
       }
     }
 
@@ -802,9 +1166,15 @@ var NeonSyncPlugin = class extends PluginBase {
       await this.deleteVaultPath(path);
     } else {
       var buf = await this._activeRemote.blob(server.hash);
-      await this.writeVaultBytes(path, buf);
-      this.settings.synced[path] = server.hash;
-      await this.rememberFile(path);
+      var origVisible = await this.writeVaultBytes(path, buf);
+      if (origVisible) {
+        this.settings.synced[path] = server.hash;
+        await this.rememberFile(path);
+      } else {
+        // Index-blind conform: S keeps its old value; the next run replays
+        // this conflict (same bytes) until a page reload exposes the file.
+        ctx.summary.reloadNeeded++;
+      }
     }
 
     ctx.summary.conflicts++;
@@ -924,14 +1294,45 @@ class NeonSyncSettingTab extends PluginSettingTabBase {
     var el = this.containerEl;
     el.empty();
 
-    new Setting(el).setName('Markport Neon Sync').setDesc(
-      'Bidirectional sync with a Markport /sync/v1 server (Neon Postgres on Vercel).'
-    );
+    new Setting(el)
+      .setName('Markport Neon Sync' + (plugin.manifest && plugin.manifest.version ? ' v' + plugin.manifest.version : ''))
+      .setDesc('Bidirectional sync with a Markport /sync/v1 server (Neon Postgres on Vercel).');
+
+    // ── Claimed URL: paste the link from the browser; parseVaultUrl (same
+    // rules as the web app's starter-url.js) fills the two fields below ────
+    var URL_DESC = 'Paste your claimed link — https://app/vault/<name>, the short https://app/<name>, or a note deep link — and Server URL + Vault name fill in automatically.';
+    var baseUrlText = null;
+    var vaultText = null;
+    var urlField = new Setting(el)
+      .setName('Vault URL')
+      .setDesc(URL_DESC)
+      .addText(function (t) {
+        t.setPlaceholder('https://notes.sarris.dev/vault/myvault')
+          .onChange(function (v) {
+            var raw = String(v === null || v === undefined ? '' : v).trim();
+            if (!raw) { urlField.setDesc(URL_DESC); return; }
+            var parsed = parseVaultUrl(raw);
+            if (!parsed.ok) {
+              urlField.setDesc(URL_DESC + ' ⚠ ' + parsed.error);
+              return;
+            }
+            if (parsed.baseUrl) {
+              s.baseUrl = parsed.baseUrl;
+              if (baseUrlText) baseUrlText.setValue(s.baseUrl);
+            }
+            s.vault = parsed.vault;
+            if (vaultText) vaultText.setValue(s.vault);
+            plugin.saveSettings();
+            urlField.setDesc(URL_DESC + ' ✓ ' + (s.baseUrl || '(set Server URL below)') +
+              ' · vault "' + s.vault + '" — enter the password and press Connect.');
+          });
+      });
 
     new Setting(el)
       .setName('Server URL')
       .setDesc('Origin of the deployment, e.g. https://notes.sarris.dev')
       .addText(function (t) {
+        baseUrlText = t;
         t.setPlaceholder('https://notes.sarris.dev')
           .setValue(s.baseUrl)
           .onChange(async function (v) {
@@ -944,6 +1345,7 @@ class NeonSyncSettingTab extends PluginSettingTabBase {
       .setName('Vault name')
       .setDesc('The vault id on the server (a-z 0-9 . _ -, up to 64 chars) — the name in /vault/<name> links.')
       .addText(function (t) {
+        vaultText = t;
         t.setValue(s.vault)
           .onChange(async function (v) {
             s.vault = v.trim();
@@ -953,14 +1355,39 @@ class NeonSyncSettingTab extends PluginSettingTabBase {
 
     new Setting(el)
       .setName('Password')
-      .setDesc('Claim/unlock password. Stored in this plugin\'s data.json so tokens can refresh; leave empty to use a manually pasted token only.')
+      .setDesc('Claim/unlock password. Kept in memory for this session (see "Remember password" ' +
+        'to also write it to data.json); leave empty to use a manually pasted token only.')
       .addText(function (t) {
-        t.setInputType('password')
-          .setValue(s.password)
+        // setInputType is missing on older Obsidian bundles (e.g. the pinned
+        // mobile build behind the web app): an unguarded call threw
+        // "t.setInputType is not a function" and killed display() halfway —
+        // everything BELOW Password (Token, Status, Connect, Sync, Pull)
+        // never rendered. "No Connect button", round two. Guard it, fall
+        // back to the raw input element, never let cosmetics abort the tab.
+        if (typeof t.setInputType === 'function') {
+          t.setInputType('password');
+        } else if (t.inputEl && typeof t.inputEl.setAttribute === 'function') {
+          t.inputEl.setAttribute('type', 'password');
+        }
+        t.setValue(s.password)
           .onChange(async function (v) {
             s.password = v;
             await plugin.saveSettings();
           });
+      });
+
+    new Setting(el)
+      .setName('Remember password')
+      .setDesc('Off: the password is kept in memory only and never written to data.json — ' +
+        'sync keeps working with the saved token until it expires, then you re-enter the password. ' +
+        'On: written to data.json in PLAINTEXT, so any copy of this vault (cloud backup, another ' +
+        'sync tool, the web build\'s own sync) carries it.')
+      .addToggle(function (t) {
+        t.setValue(s.rememberPassword === true).onChange(async function (v) {
+          s.rememberPassword = !!v;
+          if (!s.rememberPassword) delete s.password; // drop it from memory too
+          await plugin.saveSettings();
+        });
       });
 
     new Setting(el)
@@ -977,44 +1404,75 @@ class NeonSyncSettingTab extends PluginSettingTabBase {
     var status = new Setting(el)
       .setName('Status')
       .setDesc(_this.statusText());
-    status.addButton(function (b) {
-      b.setButtonText('Check').onClick(async function () {
-        b.setDisabled(true);
-        try {
-          var info = await vaultStatus(s);
-          status.setDesc((info.claimed ? 'claimed' : 'UNCLAIMED — Connect will claim it') +
-            ' · token ' + (tokenExpired(s.token) ? 'missing/expired' : 'valid'));
-        } catch (err) {
-          status.setDesc('error: ' + ((err && err.message) || err));
-        } finally {
-          b.setDisabled(false);
-        }
+
+    // One action per row: several buttons sharing a single row can clip
+    // off-screen on narrow/mobile layouts — and every action also exists in
+    // the command palette (Connect / Sync now / Pull only).
+    new Setting(el)
+      .setName('Connect')
+      .setDesc('Exchange the password for a token — claims the vault if the name is still unclaimed.')
+      .addButton(function (b) {
+        b.setButtonText('Connect').setCta().onClick(async function () {
+          b.setDisabled(true);
+          try {
+            await plugin.connect();
+            status.setDesc(_this.statusText());
+            new Notice('Neon sync: connected, token saved');
+          } catch (err) {
+            new Notice('Neon sync: ' + ((err && err.message) || err));
+          } finally {
+            b.setDisabled(false);
+          }
+        });
       });
-    });
-    status.addButton(function (b) {
-      b.setButtonText('Connect').setCta().onClick(async function () {
-        b.setDisabled(true);
-        try {
-          await plugin.connect();
-          status.setDesc(_this.statusText());
-          new Notice('Neon sync: connected, token saved');
-        } catch (err) {
-          new Notice('Neon sync: ' + ((err && err.message) || err));
-        } finally {
-          b.setDisabled(false);
-        }
+
+    new Setting(el)
+      .setName('Check')
+      .setDesc('Ask the server whether the vault is claimed and the stored token is still valid.')
+      .addButton(function (b) {
+        b.setButtonText('Check').onClick(async function () {
+          b.setDisabled(true);
+          try {
+            var info = await vaultStatus(s);
+            status.setDesc((info.claimed ? 'claimed' : 'UNCLAIMED — Connect will claim it') +
+              ' · token ' + (tokenExpired(s.token) ? 'missing/expired' : 'valid'));
+          } catch (err) {
+            status.setDesc('error: ' + ((err && err.message) || err));
+          } finally {
+            b.setDisabled(false);
+          }
+        });
       });
-    });
-    status.addButton(function (b) {
-      b.setButtonText('Sync now').onClick(async function () {
-        b.setDisabled(true);
-        try {
-          await plugin.doSync();
-        } catch (_) { /* Notice already shown */ } finally {
-          b.setDisabled(false);
-        }
+
+    new Setting(el)
+      .setName('Sync now')
+      .setDesc('Full sync: pull server changes, resolve conflicts, push local changes.')
+      .addButton(function (b) {
+        b.setButtonText('Sync now').onClick(async function () {
+          b.setDisabled(true);
+          try {
+            await plugin.doSync();
+            status.setDesc(_this.statusText());
+          } catch (_) { /* Notice already shown */ } finally {
+            b.setDisabled(false);
+          }
+        });
       });
-    });
+
+    new Setting(el)
+      .setName('Pull only')
+      .setDesc('Download server changes without pushing anything.')
+      .addButton(function (b) {
+        b.setButtonText('Pull').onClick(async function () {
+          b.setDisabled(true);
+          try {
+            await plugin.doSync(false, true);
+            status.setDesc(_this.statusText());
+          } catch (_) { /* Notice already shown */ } finally {
+            b.setDisabled(false);
+          }
+        });
+      });
 
     new Setting(el)
       .setName('Auto-sync interval (minutes)')
@@ -1031,8 +1489,10 @@ class NeonSyncSettingTab extends PluginSettingTabBase {
 
   statusText() {
     var s = this.plugin.settings;
-    if (!s.baseUrl || !s.vault) return 'not configured yet';
-    var tokenState = !s.token ? 'no token' : (tokenExpired(s.token) ? 'token expired' : 'token valid');
+    if (!s.baseUrl || !s.vault) {
+      return 'not configured yet — paste your vault URL at the top (or fill Server URL + Vault name), enter the password, then press Connect.';
+    }
+    var tokenState = !s.token ? 'no token — press Connect' : (tokenExpired(s.token) ? 'token expired — press Connect' : 'token valid');
     return 'vault "' + s.vault + '" at ' + s.baseUrl + ' · ' + tokenState;
   }
 }
@@ -1045,5 +1505,13 @@ NeonSyncPlugin.isInternalPath = isInternalPath;
 NeonSyncPlugin.tokenExpired = tokenExpired;
 NeonSyncPlugin.sha256Hex = sha256Hex;
 NeonSyncPlugin.bytesToBase64 = bytesToBase64;
+NeonSyncPlugin.parseVaultUrl = parseVaultUrl;
+NeonSyncPlugin.normalizeBaseUrl = normalizeBaseUrl;
+NeonSyncPlugin.isLocalHostName = isLocalHostName;
+// Transport seam for tests (test/http.test.js): the web build's response
+// getters — not the plugin — are what make a binary body explode.
+NeonSyncPlugin.httpOnce = httpOnce;
+NeonSyncPlugin.createRemote = createRemote;
+NeonSyncPlugin.statusDetail = statusDetail;
 
 module.exports = NeonSyncPlugin;

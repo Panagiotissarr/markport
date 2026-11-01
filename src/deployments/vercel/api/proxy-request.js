@@ -17,10 +17,11 @@
 //   - no Cache API: Node has no `caches.default`. Plugin downloads are
 //     cached by the browser/CDN for immutable raw URLs anyway; skipping the
 //     edge cache trades a little origin traffic for a lot less state.
-//   - client IP comes from x-forwarded-for (Vercel's first entry) instead
-//     of CF-Connecting-IP.
+//   - client IP comes from lib/client-ip.js (platform headers first, last
+//     forwarded hop last) instead of CF-Connecting-IP.
 
 import { toNodeHandler } from '../lib/adapter.js';
+import { clientIp } from '../lib/client-ip.js';
 import { withErrors } from '../lib/http.js';
 
 const ALLOWED_HOSTS = new Set([
@@ -94,12 +95,6 @@ function pruneExpiredRateLimitEntries(now) {
   for (const [key, entry] of rateLimitMap) {
     if (now - entry.windowStart >= RATE_LIMIT_WINDOW_MS) rateLimitMap.delete(key);
   }
-}
-
-function clientIp(request) {
-  const forwarded = request.headers.get('x-forwarded-for');
-  if (forwarded) return forwarded.split(',')[0].trim();
-  return request.headers.get('x-real-ip') || '';
 }
 
 // Missing IP bypasses the limiter (tests, and any proxy that strips it) —

@@ -22,7 +22,9 @@
 // even between resets.
 
 import { toNodeHandler } from '../../../../lib/adapter.js';
+import { checkToken } from '../../../../lib/auth.js';
 import { assertVaultName, hashPassword, issueVaultToken, verifyPassword } from '../../../../lib/claims.js';
+import { clientIp } from '../../../../lib/client-ip.js';
 import { getSyncToken } from '../../../../lib/config.js';
 import { SyncError, json, withErrors } from '../../../../lib/http.js';
 import { getStore } from '../../../../lib/store.js';
@@ -31,17 +33,17 @@ const RATE_WINDOW_MS = 60 * 1000;
 const RATE_MAX = 10;
 const hits = new Map(); // ip -> { count, resetAt }
 
-function clientIp(request) {
-  const fwd = request.headers.get('x-vercel-forwarded-for') || request.headers.get('x-forwarded-for') || '';
-  return (fwd.split(',')[0] || '').trim() || 'unknown';
-}
-
+// Best-effort, per function instance: no shared state exists across
+// instances, so this dampens one client's guessing rate but is not a quota.
+// The key itself must be unspoofable, though — see lib/client-ip.js (taking
+// the left-most `x-forwarded-for` entry would let an attacker mint a fresh
+// bucket per request and bypass the limit entirely).
 function rateLimit(request) {
   const now = Date.now();
   if (hits.size > 1000) {
     for (const [ip, entry] of hits) if (entry.resetAt <= now) hits.delete(ip);
   }
-  const ip = clientIp(request);
+  const ip = clientIp(request) || 'unknown';
   let entry = hits.get(ip);
   if (!entry || entry.resetAt <= now) {
     entry = { count: 0, resetAt: now + RATE_WINDOW_MS };
@@ -99,6 +101,27 @@ export const web = withErrors(async (request) => {
 
     const claim = await store.getClaim(name);
     if (!claim) {
+      // ── first-claim gate ────────────────────────────────────────────────
+      // A claim IS the credential: whoever claims a name first gets a token
+      // for that vault. That is fine for an EMPTY vault (you are naming the
+      // vault you are about to fill), but it would hand any stranger full
+      // read/write access to a vault that already holds someone's notes —
+      // e.g. a vault the operator filled with SYNC_TOKEN and never claimed.
+      // Names are visible in /vault/<name> URLs and GET /vaults/<name> says
+      // whether they are claimed, so that is not a secret to rely on.
+      // Rule: content already present → only the operator (SYNC_TOKEN) may
+      // attach a password. Everyone else must have the real password.
+      if (await store.vaultHasContent(name)) {
+        const header = request.headers.get('authorization') || '';
+        const bearer = header.startsWith('Bearer ') ? header.slice(7) : '';
+        if (!checkToken(bearer, key)) {
+          throw new SyncError(
+            409,
+            'this vault already has synced content — enter its password, or claim it with the ' +
+              'operator token (Authorization: Bearer <SYNC_TOKEN>)'
+          );
+        }
+      }
       const { salt, hash } = hashPassword(password);
       const created = await store.putClaim(name, salt, hash);
       if (created) {

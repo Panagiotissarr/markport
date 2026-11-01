@@ -26,6 +26,7 @@ Markport loads Obsidian's original renderer (`app.js`) completely unmodified - z
 - Search and command palette
 - Core plugins (file explorer, tags, bookmarks, outgoing links, etc.)
 - Real-time sync across tabs via WebSocket - **Node.js server mode only** (`/api/watch`); not available in the client-only (OPFS) deployment, which has no server to push events from
+- Automatic background sync on client-only deployments with `/sync/v1` (Vercel): a **startup sync** runs before Obsidian loads (pulled notes appear immediately - no reload), edits **auto-push** ~20 s after you stop typing (plus a best-effort flush when the tab hides), every request **retries with backoff** on flaky networks/cold functions, and pulls download 4 blobs in parallel - the manual Push/Pull buttons stay as a fallback
 - RTL / Unicode support
 
 ### Fast bootstrap (Node.js server mode)
@@ -147,11 +148,24 @@ npm start
 ```
 
 Open `http://127.0.0.1:3000`. `/mobile` also works (backwards-compatible alias, same page).
-`/starter` (the old desktop vault picker) returns the same app shell as `/` on the Node
-server - `GET /starter` is a 200, not a redirect - so existing bookmarks/links still land
-you on the app instead of a 404. The client-only Cloudflare deployment serves `/starter`
-too, via its own Worker route (`index.js`) that returns the same app shell - see
-"Cloudflare (client-only) deployment" below; that deployment is not a plain static host.
+`/starter` returns the same app shell as `/` on the Node server - `GET /starter` is a 200,
+not a redirect - so existing bookmarks/links still land you on the app instead of a 404.
+What renders there is a **minimal "Enter URL" screen** (boot.js's `renderStarterScreen`,
+not Obsidian's native vault-chooser): one input box - type a vault URL or name and go.
+The Obsidian bundle is never loaded on `/starter`, so the screen is instant, works
+offline, and none of the native onboarding/storage-location UI is shown. A bare name
+first checks the local vault registry (exact id, then a case-insensitive name match);
+otherwise the name IS the vault id and `/vault/<name>` takes over (password
+claim/unlock on client-only builds, a fresh local vault on this Node server). The
+client-only Cloudflare deployment serves `/starter` too, via its own Worker route
+(`index.js`) that returns the same app shell - see "Cloudflare (client-only) deployment"
+below; that deployment is not a plain static host.
+
+`/{VAULT_NAME}` short links work everywhere: a bare single-segment path (no dot, not a
+reserved route like `/api` or `/starter`) redirects (302) to `/vault/{VAULT_NAME}` -
+server-side on all three deployments, plus a client-side twin in boot.js that covers the
+offline service-worker fallback. The shared rule lives in
+`src/client-mobile/starter-url.js` (`shortPathSegment`).
 
 `/mobile` is **not** part of the Cloudflare (client-only) deployment - it's a route this Node
 server adds; the static deployment's Worker serves `/`, `/starter`, `/vault/*`, and
@@ -226,6 +240,8 @@ things a plain static host can't:
   A sync server or any other host is never routed through it
 - `GET /starter` and `/vault/*` - SPA-fallback routes that return the same app shell as `/`, so
   deep links and bookmarks don't 404
+- `GET /{VAULT_NAME}` - single-segment short links 302 to `/vault/{VAULT_NAME}` (same rule as
+  `starter-url.js` client-side; reserved routes and dot-files are never swallowed)
 
 Everything else is served as a static asset (`env.ASSETS`). See
 `src/deployments/cloudflare/README.md` for the full picture (system plugins, proxy caching, known
@@ -264,6 +280,7 @@ Browser
   └─ HTTP → CF Worker (index.js)
               ├─ POST /api/proxy-request  → edge proxy (GitHub/obsidian.md, CORS)
               ├─ GET /starter, /vault/*   → same app shell as / (SPA fallback)
+              ├─ GET /{VAULT_NAME}        → 302 /vault/{VAULT_NAME} (short links)
               └─ everything else          → static assets (CF CDN)
 ```
 
@@ -271,7 +288,7 @@ Browser
 
 | File | Purpose |
 |------|---------|
-| `src/deployments/cloudflare/index.js` | Worker entry: `/api/proxy-request` + `/starter`/`/vault/*` fallback, else static assets |
+| `src/deployments/cloudflare/index.js` | Worker entry: `/api/proxy-request` + `/starter`/`/vault/*` fallback + `/{VAULT_NAME}` short-link 302, else static assets |
 | `src/deployments/cloudflare/proxy-worker.js` | The CORS-safe outbound proxy implementation |
 | `src/deployments/cloudflare/template.js` | Demo vault content - seeded client-side into a new visitor's own OPFS vault on first visit |
 | `src/config/deploy-config.json` / `deploy-config.demo.json` | The two build profiles - app and demo (`OW_PROFILE`) |
@@ -292,8 +309,9 @@ silently overwritten). Vault content itself still lives in each browser's OPFS; 
 the shared sync state (blobs + file table), not a server-side vault you browse.
 
 Also served: `POST /api/proxy-request` (the same allow-listed GitHub/obsidian.md proxy, ported
-from the Cloudflare Worker) and the `/starter`, `/vault/*` SPA-fallback routes (via
-`vercel.json` rewrites). Everything else is static.
+from the Cloudflare Worker), the `/starter`, `/vault/*` SPA-fallback routes, and
+`/{VAULT_NAME}` short links (302 → `/vault/{VAULT_NAME}`) via `vercel.json`. Everything else
+is static.
 
 ```bash
 cd src/deployments/vercel
@@ -310,14 +328,21 @@ Vercel project's Build Command must be **empty** - `vercel deploy --prod` ships 
 `public/` as-is.
 
 Vaults are addressed by **name + password**, not by a token you copy between devices: open
-`/vault/<name>` and type the password (the first password **claims** an unclaimed name; later
-ones must match), or use `/starter`'s name field to jump straight to a vault. Success stores an
-`mpv1.*` vault-scoped token (90 days) in localStorage and reloads as a synced vault. The same
-claim/unlock endpoint backs `src/neon-sync-plugin/`, an Obsidian plugin (desktop **and**
-mobile) that syncs a real Obsidian vault against the same server-side vault. Manual
-`localStorage` config with the operator's `SYNC_TOKEN` still works. Full setup, claim-flow
-details, Vercel's 4.5 MB chunking story, and the conflict rules:
-`src/deployments/vercel/README.md`.
+`/vault/<name>` (or just `/<name>` - short links redirect) and type the password (the first
+password **claims** an unclaimed name; later ones must match), or type a vault name/URL into
+`/starter`'s single input box to jump straight to a vault. Success stores an `mpv1.*`
+vault-scoped token (90 days) in **sessionStorage** - the password is session-only: closing the
+tab/browser forgets it and the next visit asks again (a non-secret localStorage marker keeps
+the prompt prefilled as "Unlock"). Unlock then runs a **startup sync** before Obsidian loads,
+and edits **auto-push** in the background afterwards. The same claim/unlock endpoint backs
+`src/neon-sync-plugin/`, an Obsidian plugin (desktop **and** mobile) that syncs a real
+Obsidian vault against the same server-side vault - paste the claimed `/vault/<name>` URL
+into its settings and press Connect; a ready-to-install zip lives at
+`src/neon-sync-plugin/release/` and the changelogs on the repo's GitHub releases
+(`neon-sync-v*`). Manual `localStorage` config with the
+operator's `SYNC_TOKEN` still works (the client reads sessionStorage first, then
+localStorage). Full setup, claim-flow details, Vercel's 4.5 MB chunking story, and the
+conflict rules: `src/deployments/vercel/README.md`.
 
 ---
 

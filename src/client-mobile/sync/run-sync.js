@@ -51,9 +51,15 @@
 
   // Identical to run-pull.js's helpers (kept in both files so either runner
   // works standalone; change them together).
+  // SESSION-FIRST: password-claimed vaults keep their mpv1 token in
+  // sessionStorage (boot.js's saveClaimedVault — "forget the password when
+  // the page is closed"); manual operator configs (a raw SYNC_TOKEN typed
+  // into localStorage, per the READMEs) keep working through the fallback.
   function getSyncConfig(vaultId) {
     try {
-      var raw = localStorage.getItem(configKeyFor(vaultId));
+      var raw = null;
+      try { raw = sessionStorage.getItem(configKeyFor(vaultId)); } catch (_) { }
+      if (!raw) raw = localStorage.getItem(configKeyFor(vaultId));
       if (!raw) return null;
       var parsed = JSON.parse(raw);
       if (!parsed || !parsed.baseUrl || !parsed.token) return null;
@@ -204,10 +210,32 @@
       var missing = await ctx.remote.missingBlobs(want); // may throw EPUSH
       var missingSet = {};
       for (var m = 0; m < missing.length; m++) missingSet[missing[m]] = true;
+      // Upload what the server lacks, 3 at a time (putBlob is idempotent
+      // per chunk and content-addressed, so parallel uploads of distinct
+      // hashes are safe; duplicates within one push are skipped). Any
+      // failure — after remote-client's own retries — throws and fails this
+      // push phase: the commit below must be able to assume the bytes
+      // arrived. (A rejected Promise.all leaves the sibling workers
+      // finishing their idempotent uploads in the background — harmless.)
+      var upQueue = [];
+      var upSeen = {};
       for (var u = 0; u < ready.length; u++) {
-        if (missingSet[ready[u].hash]) {
-          await ctx.remote.putBlob(ready[u].hash, ready[u].bytes);
+        var uh = ready[u].hash;
+        if (missingSet[uh] && !upSeen[uh]) { upSeen[uh] = true; upQueue.push(ready[u]); }
+      }
+      if (upQueue.length > 0) {
+        var UP_CONCURRENCY = 3;
+        async function uploadWorker() {
+          for (;;) {
+            var item = upQueue.shift();
+            if (!item) return;
+            await ctx.remote.putBlob(item.hash, item.bytes);
+          }
         }
+        var upWorkers = [];
+        var upCount = Math.min(UP_CONCURRENCY, upQueue.length);
+        for (var uw = 0; uw < upCount; uw++) upWorkers.push(uploadWorker());
+        await Promise.all(upWorkers);
       }
     }
 
@@ -316,13 +344,49 @@
 
       // ── pull ────────────────────────────────────────────────────────────
       syncStatus = 'downloading';
-      if (doPull) {
-        for (var i = 0; i < plan.downloads.length; i++) {
-          var dl = plan.downloads[i];
-          var buf = await remote.blob(dl.hash);
-          await store.writeFile({ path: dl.path, data: toBase64(buf) });
-          await hashStore.upsert(dl.path, dl.hash);
-          ctx.summary.downloaded++;
+      if (doPull && plan.downloads.length > 0) {
+        // Downloads are the network-bound phase of a pull (and where a cold
+        // serverless function used to time the whole run out on big vaults —
+        // "sometimes it fails to pull"). A pool of 4 parallel workers cuts
+        // the wall time ~4x on typical note-sized blobs; each worker applies
+        // its own file (writeFile → hashStore.upsert) — safe concurrently:
+        // distinct OPFS paths, and hash-store's IndexedDB transactions are
+        // per-op. A failure (even after remote-client's retries) no longer
+        // aborts the whole run: it is counted (summary.downloadErrors),
+        // logged, and left for the next sync — the hashStore was only
+        // updated for successes, so failed files are still "not downloaded"
+        // next time. EAUTH still aborts immediately: every remaining
+        // request would fail the same way.
+        var dlQueue = plan.downloads.slice();
+        var dlErrors = [];
+        var DL_CONCURRENCY = 4;
+        async function downloadWorker() {
+          for (;;) {
+            if (dlErrors.length > 0 && dlErrors[0].error && dlErrors[0].error.code === 'EAUTH') return;
+            var dl = dlQueue.shift();
+            if (!dl) return;
+            try {
+              var buf = await remote.blob(dl.hash);
+              await store.writeFile({ path: dl.path, data: toBase64(buf) });
+              await hashStore.upsert(dl.path, dl.hash);
+              ctx.summary.downloaded++;
+            } catch (e) {
+              dlErrors.push({ path: dl.path, error: e });
+            }
+          }
+        }
+        var dlWorkers = [];
+        var dlCount = Math.min(DL_CONCURRENCY, dlQueue.length);
+        for (var dli = 0; dli < dlCount; dli++) dlWorkers.push(downloadWorker());
+        await Promise.all(dlWorkers);
+        if (dlErrors.length > 0) {
+          if (dlErrors[0].error && dlErrors[0].error.code === 'EAUTH') throw dlErrors[0].error;
+          ctx.summary.downloadErrors = dlErrors.length;
+          ctx.summary.downloadErrorPaths = dlErrors.slice(0, 5).map(function (x) { return x.path; });
+          console.warn('[ow-sync] ' + dlErrors.length + ' download(s) failed (left for the next sync):',
+            dlErrors.slice(0, 5).map(function (x) {
+              return x.path + ': ' + ((x.error && x.error.message) || x.error);
+            }));
         }
       }
 

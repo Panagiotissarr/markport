@@ -168,6 +168,25 @@ export async function createPgStore(databaseUrl, limits = {}) {
           await client.query(`delete from blob_parts where hash = $1`, [hash]);
         }
 
+        // ── upload-shape guards ────────────────────────────────────────────
+        // `size` alone is only a label the client chooses. Without these two
+        // checks a client could declare 64 MiB and then POST MAX_CHUNKS
+        // (4096) × 3 MiB parts — the parts are stored, and assembly then
+        // Buffer.concat()s ~12 GiB inside the function (OOM) while the
+        // database holds the bytes until the 24h sweep. Together they make
+        // "bytes held for one hash" ≤ the declared size ≤ SYNC_MAX_BLOB_BYTES.
+        if (data.length > size) {
+          throw new StoreError('ETOOLARGE', 'chunk is larger than the declared blob size');
+        }
+        const held = await client.query(
+          `select coalesce(sum(octet_length(data)), 0)::bigint as n
+             from blob_parts where hash = $1 and idx <> $2`,
+          [hash, index]
+        );
+        if (Number(held.rows[0].n) + data.length > size) {
+          throw new StoreError('ETOOLARGE', 'chunks exceed the declared blob size');
+        }
+
         await client.query(
           `insert into blob_parts (hash, idx, total, size, data)
            values ($1, $2, $3, $4, $5)
@@ -176,7 +195,6 @@ export async function createPgStore(databaseUrl, limits = {}) {
                  size = excluded.size, created_at = now()`,
           [hash, index, total, size, data]
         );
-
         const count = await client.query(
           `select count(*)::int as n from blob_parts where hash = $1`,
           [hash]
@@ -217,7 +235,7 @@ export async function createPgStore(databaseUrl, limits = {}) {
       return { stored: stored === true };
     },
 
-    async commit(vault, changes, deletions) {
+    async commit(vault, changes, deletions, opts = {}) {
       const result = await withTransaction(async (client) => {
         await client.query(
           `insert into vault_meta (vault_id) values ($1) on conflict do nothing`,
@@ -249,6 +267,33 @@ export async function createPgStore(databaseUrl, limits = {}) {
         const changeOps = applied.filter((op) => op.kind === 'change');
         const deletionOps = applied.filter((op) => op.kind === 'deletion');
 
+        // Sizes are the SERVER's fact, not the client's. `changes[].size` is
+        // attacker-chosen (only bounded by SYNC_MAX_BLOB_BYTES); storing it
+        // would let a client make the manifest claim 64 MiB for a 4-byte
+        // file, which feeds every other device's mtime+size hash cache and
+        // can make it skip re-hashing a file that really changed.
+        // `checkBlobs` additionally re-verifies, INSIDE this transaction,
+        // that the content still exists — the route's pre-check races the
+        // blob GC, and losing that race would write a file row pointing at a
+        // deleted blob (an unreadable path that no later sync can repair).
+        const sizes = new Map();
+        if (changeOps.length > 0) {
+          const hashes = [...new Set(changeOps.map((op) => op.hash))];
+          const res = await client.query(
+            `select hash, size from blobs where hash = any($1::text[])`,
+            [hashes]
+          );
+          for (const row of res.rows) sizes.set(row.hash, Number(row.size));
+          if (opts.checkBlobs) {
+            const missing = hashes.filter((hash) => !sizes.has(hash));
+            if (missing.length > 0) {
+              const err = new StoreError('EMISSING', 'commit references unknown blobs');
+              err.hashes = missing;
+              throw err;
+            }
+          }
+        }
+
         if (changeOps.length > 0) {
           await client.query(
             `insert into files (vault_id, path, hash, size, deleted, updated_at)
@@ -258,7 +303,7 @@ export async function createPgStore(databaseUrl, limits = {}) {
                set hash = excluded.hash, size = excluded.size,
                    deleted = false, updated_at = now()`,
             [vault, JSON.stringify(changeOps.map((op) => ({
-              path: op.path, hash: op.hash, size: op.size,
+              path: op.path, hash: op.hash, size: sizes.get(op.hash) ?? op.size,
             })))]
           );
         }
@@ -292,6 +337,16 @@ export async function createPgStore(databaseUrl, limits = {}) {
       // Deletions are what orphan blobs — sweep on those commits only.
       if (deletions.length > 0) await gc();
       return result;
+    },
+
+    // Used by the claim route: a name that already holds content must not
+    // become claimable by whoever asks first (see api/sync/v1/vaults/[name].js).
+    async vaultHasContent(vault) {
+      const res = await pool.query(
+        `select exists(select 1 from files where vault_id = $1 and not deleted) as present`,
+        [vault]
+      );
+      return !!(res.rows[0] && res.rows[0].present);
     },
 
     async getClaim(name) {

@@ -19,6 +19,19 @@ export async function getStore() {
   const limits = { maxBlobBytes: getMaxBlobBytes(), maxPartBytes: MAX_PART_BYTES };
 
   if (mode === 'memory') {
+    // Fail closed on a real deployment: the memory store keeps every byte in
+    // one function instance, so SYNC_STORE=memory on Vercel means "sync
+    // silently loses data on the next cold start". That is a configuration
+    // mistake, not a mode. Local dev runs outside Vercel (scripts/dev.js), and
+    // SYNC_ALLOW_MEMORY_STORE=1 is the deliberate escape hatch (e.g.
+    // `vercel dev` with the memory store).
+    if (process.env.VERCEL && process.env.SYNC_ALLOW_MEMORY_STORE !== '1') {
+      throw new SyncError(
+        503,
+        'SYNC_STORE=memory is not allowed on a deployment (it loses data on restart) — ' +
+        'set DATABASE_URL, or SYNC_ALLOW_MEMORY_STORE=1 to override locally'
+      );
+    }
     cached = createMemoryStore(limits);
   } else if (mode === 'postgres') {
     if (!getDatabaseUrl()) {

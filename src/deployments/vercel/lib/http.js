@@ -68,6 +68,11 @@ export function withErrors(handler) {
       if (err instanceof SyncError) {
         return json({ error: err.message, ...(err.hashes ? { hashes: err.hashes } : {}) }, err.status);
       }
+      // EMISSING carries the hashes the client must (re)upload, so it needs
+      // the 422 body shape rather than the generic StoreError mapping.
+      if (err && err.name === 'StoreError' && err.code === 'EMISSING') {
+        return json({ error: 'missing blobs', hashes: err.hashes || [] }, 422);
+      }
       if (err && err.name === 'StoreError' && STORE_ERROR_STATUS[err.code]) {
         const [status, message] = STORE_ERROR_STATUS[err.code];
         return json({ error: message }, status);

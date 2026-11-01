@@ -85,6 +85,14 @@
        Vault.readRaw("") empty-vault probe reads the vault root as a file. -->
   <script src="/client-mobile/vault-root-path.js?v=1"></script>
 
+  <!-- 0d2. Pure starter-URL helpers — the /starter screen is a single
+       "Enter URL" box (parseVaultUrlInput) and "/{VAULT_NAME}" short links
+       redirect to /vault/{VAULT_NAME} (shortPathSegment). Must load before
+       boot.js: the entry-routing block at its top reads
+       window.__owStarterUrl synchronously. Same pure-module pattern as
+       vault-root-path.js / bootstrap-lookup.js (node:test + window). -->
+  <script src="/client-mobile/starter-url.js?v=1"></script>
+
   <!-- 0b. Pull-sync engine (the pull-sync brief §2) — v1 =
        OPFS-local vaults only. Must load before boot.js so
        window.__owSync* are ready when boot.js mounts the "Sync now" button

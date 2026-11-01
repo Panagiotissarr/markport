@@ -82,6 +82,26 @@ function pathToFileUrl(p) {
   return new URL('file://' + p.replace(/\\/g, '/')).href;
 }
 
+// /{VAULT_NAME} short-link rule — mirror of src/client-mobile/starter-url.js's
+// shortPathSegment (and vercel.json's redirect / the CF worker / the
+// runtime-server route): single segment, no dot, no leading '.'/'_'/'~', not
+// a reserved root, vault-name charset. KEEP THE COPIES IN SYNC.
+const RESERVED_ROOT_SEGMENTS = ['api', 'sync', 'starter', 'vault', 'mobile',
+  'client-mobile', 'obsidian-mobile', 'i18n', 'lib', 'public', 'sandbox',
+  'system-plugins', 'index'];
+function vaultShortName(pathname) {
+  const m = pathname.match(/^\/([^/]+)\/?$/);
+  if (!m) return null;
+  let seg = m[1];
+  try { seg = decodeURIComponent(seg); } catch { return null; }
+  if (!seg || seg.includes('.')) return null;
+  const c0 = seg.charAt(0);
+  if (c0 === '.' || c0 === '_' || c0 === '~') return null;
+  if (RESERVED_ROOT_SEGMENTS.includes(seg.toLowerCase())) return null;
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(seg)) return null;
+  return seg;
+}
+
 // vercel.json's rewrite table, minus what Vercel's api/ routing gives free.
 function syncRoute(pathname) {
   if (pathname === '/sync/v1/manifest') return 'sync/v1/manifest.js';
@@ -142,6 +162,16 @@ const server = http.createServer(async (req, res) => {
       const handler = await handlerFor(route);
       await handler(req, res);
       return;
+    }
+    // vercel.json's /{VAULT_NAME} → /vault/{VAULT_NAME} redirect, mirrored
+    // (dev.js is the local stand-in for the platform's routing table).
+    if (req.method === 'GET') {
+      const shortName = vaultShortName(pathname);
+      if (shortName) {
+        res.writeHead(302, { location: '/vault/' + encodeURIComponent(shortName) });
+        res.end();
+        return;
+      }
     }
     serveStatic(req, res, pathname);
   } catch (err) {

@@ -40,6 +40,68 @@ const MOBILE_SCRIPTS = [
 
   if (typeof global === 'undefined') window.global = window;
 
+  // ── Quiet the browser's "persistent storage" prompt ──────────────────────
+  // Obsidian's bundle (Capacitor-derived code paths) can ask the browser for
+  // persistent storage — navigator.storage.persist(), or the legacy
+  // navigator.webkitPersistentStorage.requestQuota() — which makes some
+  // browsers show a permission popup ("…wants to store data on your
+  // device"). The answer changes nothing for us: OPFS/localStorage/IndexedDB
+  // already work without the grant, and eviction under real storage pressure
+  // stays the browser's business either way. Answer "yes" silently, before
+  // app.js is ever injected — no popup, no behavior lost.
+  try {
+    if (navigator.storage && typeof navigator.storage.persist === 'function') {
+      navigator.storage.persist = function () { return Promise.resolve({ persisted: true }); };
+    }
+  } catch (e) { /* read-only implementation — nothing we can do */ }
+  try {
+    ['webkitPersistentStorage', 'webkitTemporaryStorage'].forEach(function (prop) {
+      var q = navigator[prop];
+      if (q && typeof q.requestQuota === 'function') {
+        q.requestQuota = function (bytes, successCb) {
+          if (typeof successCb === 'function') setTimeout(function () { successCb(bytes || 0); }, 0);
+        };
+      }
+    });
+  } catch (e) { /* ditto */ }
+
+  // ── One-time migration: persistent mpv1 tokens → session-only ───────────
+  // Earlier builds stored the password-claim token (mpv1.*, 90-day TTL) in
+  // localStorage['ow-sync:<name>'], so the credential survived closing the
+  // browser. Credentials are session-scoped now ("forget the password when
+  // the page is closed" — saveClaimedVault below writes sessionStorage):
+  // convert each legacy entry to the NON-SECRET 'ow-sync-claimed:<name>'
+  // marker (baseUrl + vault name only) and delete the persisted token. The
+  // marker is what makes the next boot re-prompt for the password instead of
+  // silently running unsynced. Manual operator configs (a raw SYNC_TOKEN —
+  // never 'mpv1.*') stay in localStorage untouched, exactly as before.
+  (function migrateLegacyClaimTokens() {
+    try {
+      var drop = [];
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (!k || k.indexOf('ow-sync:') !== 0) continue;
+        var parsed = null;
+        try { parsed = JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) {}
+        if (parsed && typeof parsed.token === 'string' && parsed.token.indexOf('mpv1.') === 0) {
+          var name = k.slice('ow-sync:'.length);
+          if (name && !localStorage.getItem('ow-sync-claimed:' + name)) {
+            localStorage.setItem('ow-sync-claimed:' + name, JSON.stringify({
+              baseUrl: parsed.baseUrl || location.origin,
+              vault: parsed.vault || name,
+            }));
+          }
+          drop.push(k);
+        }
+      }
+      for (var j = 0; j < drop.length; j++) localStorage.removeItem(drop[j]);
+      if (drop.length) {
+        console.log('[obsidian-web] moved ' + drop.length +
+          ' claimed-vault credential(s) to session-only storage (password will be asked once per session)');
+      }
+    } catch (e) { /* private mode / storage blocked — nothing to migrate */ }
+  })();
+
   // ── Vault selection — path-based routing (brief §0/§3ב) ────────────────────
   // מקור-האמת עבר מ-?vault= (query, נמחק) ל-location.pathname:
   //   /vault/<id> → כספת פתוחה <id> (גלוי, ניתן-לשיתוף/סימניה)
@@ -109,6 +171,27 @@ const MOBILE_SCRIPTS = [
   // note-path עודכן ל-/Welcome ב-Commit 6 אחרי calev-heavy, ראה שם), או
   // ל-/starter (אף אחד מהשניים) — location.replace (לא push) כדי שלא ייווצר
   // loop ב-back.
+  //
+  // ── /{VAULT_NAME} → /vault/{VAULT_NAME} (קישור-קצר) ──────────────────────
+  // A bare single-segment path IS a vault name: redirect to the canonical
+  // /vault/<name> URL (location.replace — no back-loop). The server routers
+  // (runtime-server's /:name route, the Cloudflare Worker, vercel.json's
+  // redirect, vercel's dev.js) answer these paths with a 302 FIRST — this
+  // client-side twin covers the cases where the shell still lands here
+  // unredirected: the offline service-worker fallback (sw.js serves the
+  // cached '/' shell for ANY failed navigation) and stale deployments.
+  // starter-url.js's shortPathSegment is the shared rule: one segment, no
+  // dot (real files), not reserved (/api, /starter, /mobile, /client-mobile,
+  // …), vault-name charset. '/' itself and multi-segment paths fall through
+  // to the entry logic below, unchanged.
+  if (!VAULT_ID && !forceStarter && window.__owStarterUrl) {
+    var __owShortName = window.__owStarterUrl.shortPathSegment(__owPath);
+    if (__owShortName) {
+      location.replace('/vault/' + encodeURIComponent(__owShortName));
+      return;   // מנווטים החוצה — אין מה לעשות יותר בטיק הזה
+    }
+  }
+
   if (forceStarter) {
     // מנקה מפתח-בחירה פעם-אחת (בלי reload נוסף — אין loop) כדי שהבאנדל
     // הנייטיב לא ינסה auto-open כשהוא רץ מיד למטה (מסך-הפתיחה, no-vault).
@@ -655,33 +738,6 @@ const MOBILE_SCRIPTS = [
     setTimeout(function () { obs.disconnect(); }, 8000);
   }
 
-  // ── מסך-פתיחה נייטיב (no-vault) — seed רשימת ה-vaults ──────────────────────
-  // מאכלס mobile-external-vaults (Lte של הנייטיב) + ow-known-vault-ids
-  // (משמש גם ע"י owNativeVaultIdFromValue וגם ע"י capacitor-shim's stat()
-  // polyfill). /api/vaults/list מחזיר object map keyed-by-id (לא array —
-  // finding 3 אביגיל) — Object.keys ולא array-iteration.
-  // כל item בפורמט '<id>/<name>' — ראה הערת owNativeVaultIdFromValue למעלה.
-  function seedNativeVaultList() {
-    var localList = window.__owLocalVaults ? window.__owLocalVaults.list() : [];
-    var items = localList.map(function (v) { return v.id + '/' + v.name; });
-    var ids = localList.map(function (v) { return v.id; });
-    return fetch('/api/vaults/list')
-      .then(function (r) { return r.json(); })
-      .then(function (res) {
-        Object.keys(res || {}).forEach(function (id) {
-          var v = res[id] || {};
-          var name = (v.path || id).split('/').pop();
-          items.push(id + '/' + name);
-          ids.push(id);
-        });
-      })
-      .catch(function () { /* server vaults לא זמינים — ממשיכים עם local/folder בלבד */ })
-      .then(function () {
-        localStorage.setItem('mobile-external-vaults', JSON.stringify(items));
-        localStorage.setItem('ow-known-vault-ids', JSON.stringify(ids));
-      });
-  }
-
   // ── מסך-פתיחה נייטיב (no-vault) — גישור בחירת/פתיחת-vault ──────────────────
   // executor spike (docs/plans/opfs-ux.md §3ד/§3ה, finding 4 אביגיל):
   // register() הנייטיב (הפונקציה שרצה אחרי "Open folder as vault"/לחיצה על
@@ -744,291 +800,178 @@ const MOBILE_SCRIPTS = [
     };
   }
 
-  // ── מסך-פתיחה נייטיב (no-vault) — Create-vault interceptor (Bug 2) ─────────
-  // executor spike (§0): onCreateVault הנייטיב (בשני המסכים האפשריים —
-  // `.mobile-onboarding` first-run "Configure your new vault" ו-המודל
-  // `.mobile-vault-chooser-screen` "Create new vault") קורא בסופו של דבר
-  // Filesystem.mkdir על ה-vault החדש. במצב no-vault __owVaultType='server'
-  // (אין vault עדיין) → מנותב ל-/api/fs/mkdir → 404 (אין שרת שיודע ליצור
-  // vault-id חדש בלי ליצור אותו קודם ב-registry שלנו) — no-op בפועל.
-  // אימות אמפירי (spike, /tmp/mnp-spike4.js): מאזין click **capture-phase
-  // שמותקן על `document`** (לא על הכפתור) חוסם את ה-handler הנייטיב גם
-  // כשמותקן אחרי שההandler כבר רשום על הכפתור — listeners על אותו element
-  // רצים לפי סדר-רישום ללא קשר ל-capture flag (capture אמיתי דורש ancestor
-  // בנתיב ה-propagation, לא את ה-target עצמו).
-  function installCreateVaultInterceptor() {
-    var handler = function (e) {
-      var btn = e.target && e.target.closest &&
-        e.target.closest('.mobile-onboarding button.mod-cta, .mobile-vault-chooser-screen button.mod-cta');
-      if (!btn) return;
-
-      // §3.6 (calev-heavy NO-GO round 2, ממצא 2): כפתור מוזרק-שלנו שחי בתוך
-      // `.mobile-onboarding` ונושא `mod-cta` תואם את ה-selector למעלה ונחטף
-      // (זה בדיוק מה שקרה לכפתור-הדמו שהיה כאן — נמחק ב-docs/plans/
-      // demo-origin-split.md §4 Commit 7, אחרי שהפיצול-לדמו ייתר אותו — אבל
-      // המוסכמה נשארת כי showGrantScreen למטה עדיין מזריק כפתור). זיהוי-
-      // לפי-class/מיקום נשבר שוב ברגע שכפתור-שלנו נוסף/משתנה (זו הפעם
-      // השנייה שבורר-לפי-מראה נשבר בסלייס ההוא) — הפתרון הנכון הוא לסמן
-      // במפורש כל כפתור שאנחנו מזריקים (`data-ow-injected`, ראה
-      // showGrantScreen למטה) ולדלג עליו כאן, לפני כל בדיקה אחרת.
-      if (btn.hasAttribute('data-ow-injected')) return;
-
-      // §3.5ב (calev PARTIAL, ממצא 1 — DoD#13): היה כאן גם התאמת-טקסט
-      // (btnText === 'Create a vault' || 'Create') לפני הבדיקה למטה — טקסט
-      // מתורגם ⇒ ב-43 מתוך 44 השפות ב-language-dropdown (המסך הראשון של
-      // ה-onboarding) ההתאמה נכשלת, ה-interceptor לא רץ בכלל, ה-onCreateVault
-      // הנייטיב מנסה Filesystem.mkdir → 405 (אין /api/fs) → הכפתור הופך
-      // no-op מוחלט: אין כספת, אין ניווט, אין Notice. הוסר — הבדיקה למטה
-      // (input[type=text] קיים באותו screen) כבר מספקת את אותו סינון בלי
-      // תלות-שפה:
-      // הטקסט המתורגם "Create a vault"/"Configure your new vault"'s
-      // equivalent מופיע גם בכפתור-ה-mod-cta של מסך-הפתיחה הראשוני (welcome
-      // screen, "Your thoughts are yours") — שמוביל לצעד הבא (sync-intro)
-      // ולא ליצירה בפועל, ושל מסך "other sync" (מוביל לאותו צעד-configure).
-      //
-      // §3.6 (calev-heavy NO-GO round 2, ממצא 1 — DoD#17): "יש input[type=text]
-      // באותו screen" **לבדו** התברר לא-מספיק כדיסקרימינטור — מסך "Sign in to
-      // your Obsidian account" (`Use my existing vault → Obsidian Sync →
-      // Connect → Sign in`) מרנדר גם הוא input[type=text] (השדה המוסתר של
-      // קוד-האימות בן-6-הספרות, `offsetParent===null`, `autocomplete=
-      // one-time-code`) — אומת ב-vendor/obsidian-mobile/app.js (הפונקציה
-      // `yte`). לחיצה על Sign in נחטפה ⇒ יצרה כספת-זבל "Untitled" וניווטה,
-      // וההתחברות הפכה בלתי-אפשרית. דיסקרימינטור **חיובי** נוסף: קבוצת-הרדיו
-      // של מיקום-האחסון (`.mobile-onboarding-radio-option`) היא הסימן הייחודי
-      // של מסך-יצירת-הכספת. אומת מול הבאנדל: מסך ה-Sign-in (`yte`) אינו
-      // בונה `ste` (radio-group) כלל — רק שלושה שדות `ate` (email/password/
-      // mfa); שתי המסכים היחידים שמרנדרים גם input[type=text] וגם
-      // .mobile-onboarding-radio-option **באותו screen** הם "Configure your
-      // new vault" (`hte`) ומודל "Create new vault" (`w`) — שניהם בונים
-      // .formEl עם addText+radio-group יחד. מסכי-ביניים אחרים שיש בהם
-      // radio-group (הצפנה, בחירת-שיטת-סנכרון, "Connect to...") אין להם
-      // input[type=text] כלל (רק type=password, או שום שדה-טקסט) — אומת
-      // ידנית, לא רק בקוד הזה.
-      // ה-controller מ-detach()-ט את המסך הקודם בכל goTo() (previousScreens.
-      // push + contentEl.detach()) ⇒ תמיד רק מסך אחד מחובר ל-DOM בפועל תחת
-      // השורש — querySelector כאן לא "רואה" input/radio ממסכים קודמים/
-      // מנותקים. עוגן ב-DOM/מבנה, לא בטקסט (§3.5ב, עדיין תקף).
-      var screen = btn.closest('.mobile-onboarding, .mobile-vault-chooser-screen');
-      var nameInput = screen && screen.querySelector('input[type="text"]');
-      var hasLocationRadio = screen && screen.querySelector('.mobile-onboarding-radio-option');
-      if (!screen || !nameInput || !hasLocationRadio) return;
-
-      e.preventDefault();
-      e.stopImmediatePropagation();   // עוצר את onCreateVault הנייטיב (מונע את ה-mkdir הנכשל)
-
-      // one-shot: מאזינים ל-pointerdown+mousedown+click (ראה הרשמה למטה), אז
-      // אותה לחיצה עלולה לירות 3 פעמים → יצירת 3 vaults. הראשון תופס, השאר
-      // חסומים (preventDefault למעלה כבר עצר את הנייטיב בכל אירוע).
-      if (window.__owCreatingVault) return;
-      window.__owCreatingVault = true;
-
-      var name = nameInput.value.trim() || 'Untitled';
-      var selectedRadio = screen.querySelector('.mobile-onboarding-radio-option.is-selected');
-      var location_ = 'app';   // ברירת-מחדל בטוחה — לא דורש directory picker/permission
-      // §3.5ב (calev PARTIAL, ממצא 1 — DoD#13): זה היה עדיין /app storage/i
-      // על הכותרת המרונדרת — נשכח באותה מכה כמו btnText למעלה, ונופל לאותה
-      // מלכודת: בעברית ("אחסון האפליקציה") ה-regex האנגלי לא תואם ⇒ location_
-      // היה יוצא 'external' גם כש-"App storage" נבחר בפועל. תוקן לאותו עוגן
-      // מבני שהגידור למטה (installExternalStorageGate) כבר משתמש בו: סדר
-      // ה-DOM שקבוע ע"י addOption('external').addOption('app') בבאנדל, לא
-      // הטקסט — index 0 בקבוצת האחים = external, index 1 = app.
-      if (selectedRadio && selectedRadio.parentNode) {
-        var siblings = selectedRadio.parentNode.querySelectorAll('.mobile-onboarding-radio-option');
-        location_ = (siblings[0] === selectedRadio) ? 'external' : 'app';
-      }
-      // §3.1ב layer 1 (logic, mandatory) — the "Device storage" radio option
-      // renders already-selected (bundle default `.setValue('external')`,
-      // before any of our DOM hiding runs — installExternalStorageGate below
-      // is a MutationObserver, not synchronous). Firefox/Safari have no
-      // showDirectoryPicker at all, so DOM state must NEVER decide 'external'
-      // there — this override is what actually prevents the silent failure,
-      // independent of whether the visual gate has applied yet.
-      if (!('showDirectoryPicker' in window)) location_ = 'app';
-
-      if (location_ === 'external') {
-        // folder vault — choose()=showDirectoryPicker (opfs-ux) יוצר registry
-        // entry ומחזיר {path:'id/name'}. *** choose() לא מנווט *** (finding 2)
-        // → navigateToVault ידני חובה.
-        window.Capacitor.Plugins.Filesystem.choose()
-          .then(function (r) {
-            if (r && r.path) {
-              var id = owNativeVaultIdFromValue(r.path);
-              if (id) navigateToVault(id);
-            }
-          })
-          .catch(function (err) {
-            // picker בוטל/נכשל — כמו הנייטיב, שקט (canceled) או log בלבד.
-            console.warn('[obsidian-web] Create vault (external) failed:', err && err.message || err);
-            // §3.1א — the real bug: this catch used to never reset the
-            // guard (capacitor-shim.js:311/312 resets it on ITS OWN mkdir
-            // fallback path, but that's a different call site). Two routes
-            // land here: CANCELED (Chromium — user dismissed the picker,
-            // capacitor-shim.js:479, the common one) and UNSUPPORTED
-            // (Firefox/Safari, :474 — should be unreachable now that the
-            // logic gate above forces 'app', but the visual gate is a
-            // MutationObserver and could theoretically still race it once).
-            // §3.5ג (calev PARTIAL, ממצא 2 — DoD#14): the user-facing Notice
-            // for UNSUPPORTED used to live only here — but this .catch only
-            // covers OUR OWN call to Filesystem.choose() (the branch above).
-            // The bundle's own "Use my existing vault" → "On this device" →
-            // choose-folder handler (vendor/obsidian-mobile/app.js, the kte
-            // screen) calls the SAME shim method directly, with no .catch of
-            // its own — that rejection landed in the console only, a silent
-            // dead end one click away from this one. Moved the Notice into
-            // shims/capacitor-shim.js's choose() itself, the single shared
-            // entry point for every caller (ours AND the bundle's) — see
-            // there. CANCELED (normal Escape) still gets no Notice, only the
-            // guard reset below.
-            // Naive immediate reset re-opens the guard DURING the same
-            // physical click's pointerdown/mousedown/click trio (line ~648)
-            // when the throw is synchronous (UNSUPPORTED) — that would fire
-            // the Notice above up to 3×. setTimeout(...,0) resets after this
-            // tick's event trio has already run.
-            setTimeout(function () { window.__owCreatingVault = false; }, 0);
-          });
-      } else {
-        // The typed vault name is a claim LINK (client-only builds): look
-        // it up on the sync server — claimed → hand off to its password
-        // gate (/vault/<name>); unclaimed → prompt for a password, claim
-        // it, and create the vault + sync config under that exact id.
-        // Empty/invalid names (the 'Untitled' default path) and non-
-        // client-only deployments keep the old local-only create below;
-        // offline falls back to it inside lookupAndClaimVault.
-        var typedName = nameInput.value.trim();
-        if (window.__owBackend === 'none' && typedName && OW_VAULT_NAME_RE.test(typedName)) {
-          lookupAndClaimVault(typedName, function () {
-            // abort → release the one-shot guard after this click's event trio
-            // (same setTimeout pattern as the external-storage catch above).
-            setTimeout(function () { window.__owCreatingVault = false; }, 0);
-          });
-        } else {
-          var id2 = window.__owLocalVaults.create(name).id;   // OPFS (type ברירת-מחדל 'local')
-          navigateToVault(id2);   // path-based — '/vault/<id2>', ניתן-לשיתוף
-        }
-      }
-    };
-    // pointerdown+mousedown+click (capture) — לא רק click. בחלון צר (auto-mobile,
-    // מסך .mobile-onboarding) ה-onCreateVault הנייטיב רץ על אירוע-מגע מוקדם
-    // (pointerup/touchend) שקדם ל-click → interceptor שמאזין רק ל-click מגיע
-    // מאוחר מדי → mkdir→/api/fs/mkdir→405 (הבאג של המשתמשת). תפיסה מוקדמת
-    // (pointerdown) חוסמת את הנייטיב לפני שהוא רץ. one-shot guard מונע כפילות.
-    ['pointerdown', 'mousedown', 'click'].forEach(function (evt) {
-      document.addEventListener(evt, handler, true);
-    });
+  // ── /starter — minimal "Enter URL" screen (no-vault) ──────────────────────
+  // The old flow injected Obsidian's own mobile bundle here and rendered its
+  // native vault-chooser/onboarding screens (plus our injected buttons and
+  // the "Enter or claim URL" field). Replaced: /starter is now a single
+  // "Enter URL" box — type a vault URL or name and go. Nothing else renders
+  // and the Obsidian bundle is NOT loaded on this screen, which also means
+  // the native storage-location UI ("Device storage"/"App storage" radios,
+  // vault-location hints) never shows, the screen is instant, and it works
+  // offline (the SW's cached shell is all it needs).
+  //
+  // Where the typed value goes (starter-url.js parseVaultUrlInput):
+  //   - absolute http(s) URL       → navigate to it verbatim
+  //   - "/path" / "host/vault/x"   → normalized /vault/<name>[/note-path]
+  //   - bare name                  → local registry first (exact id, then a
+  //     case-insensitive NAME match — vaults created through the old native
+  //     flow carry uuid ids, not their name), else:
+  //       • client-only build (__owBackend==='none'): /vault/<name> — the
+  //         vault gate (showVaultGate) handles password claim/unlock, or
+  //         offers an explicit local create when the deployment has no sync
+  //         server at all (CF).
+  //       • server deployment: check /api/vaults/list (a typed name may be
+  //         an existing SERVER vault id/path — the old chooser seeded from
+  //         the same endpoint), else create a local vault under a fresh
+  //         uuid, matching the old native "Create new vault" behavior.
+  // Reached from: the entry redirect (/ with no last vault), "manage
+  // vaults"/close-vault inside an open vault (installNativeVaultOpenBridge's
+  // removeItem intercept), and verify failures.
+  if (!VAULT_ID) {
+    renderStarterScreen();
+    return;
   }
 
-  // ── "אחסון חיצוני" gating בדפדפנים ללא showDirectoryPicker (§3.1ב, שכבה
-  // ויזואלית — משלימה, לא מחליפה, את התיקון הלוגי ב-installCreateVaultInterceptor
-  // למעלה) ───────────────────────────────────────────────────────────────────
-  // הבאנדל מרנדר את הרדיו "Device storage"/"App storage" עם `.setValue('external')`
-  // כברירת-מחדל — ללא קשר לדפדפן — ⇒ Firefox/Safari מציגים אפשרות **נבחרת**
-  // שלעולם לא יכולה לעבוד. הסתרה בלבד הייתה משאירה כשל-שקט אם מישהו איכשהו
-  // מגיע ל-external בכל זאת; הבחירה בפועל מועברת ל-"App storage" (קליק תכנותי
-  // דרך ה-listener הקיים של הבאנדל — ste.addOption רושם click→setValue).
-  // MutationObserver (לא DOM סטטי — כל תוכן שמוזרק/מוגן במסכי ה-onboarding
-  // בקובץ הזה משתמש באותה טכניקה, ראה installVersionDisplay/showGrantScreen):
-  // הרדיו הזה מרונדר גם במסך ה-onboarding הראשוני וגם במודל "Create new
-  // vault" — וכל שלב-אשף עשוי לרנדר-מחדש. לא רץ בכלל ב-Chromium (return
-  // מוקדם) — שם showDirectoryPicker עובד, אין מה לגדר.
-  // §3.5ב (calev PARTIAL, ממצא 1 — DoD#13): הגרסה הקודמת זיהתה את שתי
-  // האפשרויות לפי טקסט מרונדר (/device storage/i, /app storage/i) — טקסט
-  // מתורגם ⇒ בכל locale שאינו אנגלית (43 מתוך 44 בבורר-השפה, שיושב על המסך
-  // הראשון) הגידור **לא חל בכלל**: "אחסון במכשיר" נשאר גלוי ונבחר, בדיוק
-  // הכשל השקט ש-DoD#1 נועד למנוע. עוגן חדש: **סדר-DOM**, לא טקסט.
-  // vendor/obsidian-mobile/app.js בונה את קבוצת-המיקום תמיד
-  // `.addOption("external", …).addOption("app", …)` — באותו סדר בשני
-  // המימושים (מסך ה-onboarding הראשוני `hte`, ומודל "Create new vault" `w`;
-  // אומת ידנית בבאנדל, לא רק בטקסט-מתורגם) — כך שהילד-הראשון של
-  // `.mobile-onboarding-radio-group` הוא תמיד "Device storage" והשני תמיד
-  // "App storage", ללא קשר לשפה. קבוצת-רדיו אחרת עם אותה מחלקה (למשל מסך
-  // ההצפנה custom/managed) יכולה תיאורטית "להזדמן" לאותו class name — כדי
-  // לא לפגוע בה בטעות, מגבילים את החיפוש ל-radio-group שנמצא **באותו screen**
-  // שגם מרנדר input[type=text] (שם ה-vault) — בדיוק אותו עוגן-מבנה
-  // ש-installCreateVaultInterceptor למעלה משתמש בו לזהות את מסך היצירה
-  // האמיתי, ומאותה סיבה (ה-controller מנתק (detach) כל מסך קודם ב-goTo(),
-  // כך שרק מסך אחד מחובר בפועל בכל רגע — אין דליפה בין שלבים).
-  function installExternalStorageGate() {
-    if ('showDirectoryPicker' in window) return;
-    function gate() {
-      var screens = document.querySelectorAll('.mobile-onboarding, .mobile-vault-chooser-screen');
-      for (var s = 0; s < screens.length; s++) {
-        var screen = screens[s];
-        if (!screen.querySelector('input[type="text"]')) continue;   // לא מסך-הגדרת-vault
-        var groups = screen.querySelectorAll('.mobile-onboarding-radio-group');
-        for (var g = 0; g < groups.length; g++) {
-          var options = groups[g].querySelectorAll('.mobile-onboarding-radio-option');
-          if (options.length < 2) continue;   // לא קבוצת device/app storage (2 אפשרויות תמיד)
-          var externalOpt = options[0], appOpt = options[1];   // סדר addOption() בבאנדל — לא טקסט
-          if (externalOpt.__owGated) continue;   // idempotent — כבר טופל
-          externalOpt.__owGated = true;
-          var wasSelected = externalOpt.classList.contains('is-selected');
-          externalOpt.style.display = 'none';
-          if (wasSelected) appOpt.click();   // מפעיל את ste.setValue הנייטיב
-          // הסבר (DoD#1: "מוסתרת... עם הסבר") — פעם אחת פר radio-group.
-          // §3.5א: אנגלית — הקהל (§0) הוא r/ObsidianMD, ממשק אנגלי.
-          var group = groups[g];
-          if (group.parentNode && !group.parentNode.querySelector('.ow-external-gate-note')) {
-            var note = document.createElement('div');
-            note.className = 'ow-external-gate-note';
-            note.style.cssText = 'font-size:12px;opacity:.7;margin:4px 0 0;';
-            note.textContent = 'External storage isn\'t available in this browser — using internal storage instead.';
-            group.parentNode.insertBefore(note, group.nextSibling);
+  function renderStarterScreen() {
+    var overlay = document.getElementById('ow-loading');
+    var host = overlay || document.body;
+
+    // No spinner — nothing loads on this screen. The overlay itself stays as
+    // the backdrop (same centered dark flex CSS as the boot spinner).
+    var spinner = host.querySelector('.ow-spinner');
+    if (spinner && spinner.parentNode) spinner.parentNode.removeChild(spinner);
+    setStatus('');
+
+    var card = document.createElement('div');
+    card.setAttribute('data-ow-injected', 'starter-screen');
+    card.style.cssText = 'display:flex;flex-direction:column;gap:12px;align-items:stretch;' +
+      'width:min(92vw,360px);padding:8px 0;' +
+      'font:14px -apple-system,BlinkMacSystemFont,sans-serif;';
+
+    var brand = (window.__owConfig && window.__owConfig.branding && window.__owConfig.branding.name) || 'Markport';
+    var title = document.createElement('div');
+    title.textContent = brand;
+    title.style.cssText = 'font-size:24px;font-weight:600;text-align:center;' +
+      'color:rgba(255,255,255,0.92);letter-spacing:0.3px;';
+
+    var hint = document.createElement('div');
+    hint.textContent = 'Enter a vault URL to open it.';
+    hint.style.cssText = 'font-size:13px;text-align:center;color:rgba(255,255,255,0.5);margin-bottom:4px;';
+
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;';
+
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = 'Enter URL';
+    input.setAttribute('aria-label', 'Vault URL or name');
+    input.autocapitalize = 'off';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.style.cssText = 'flex:1;min-width:0;padding:10px 12px;' +
+      'border:1px solid rgba(255,255,255,0.25);border-radius:6px;' +
+      'background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.92);' +
+      'font:15px -apple-system,BlinkMacSystemFont,sans-serif;outline:none;';
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = 'Go';
+    btn.setAttribute('data-ow-injected', 'starter-go');
+    btn.setAttribute('aria-label', 'Open vault');
+    btn.style.cssText = 'padding:10px 18px;background:#7f6df2;color:#fff;border:none;' +
+      'border-radius:6px;cursor:pointer;font:14px -apple-system,BlinkMacSystemFont,sans-serif;';
+
+    var err = document.createElement('div');
+    err.setAttribute('data-ow-injected', 'starter-err');
+    err.style.cssText = 'color:#e07a6b;font:12px -apple-system,BlinkMacSystemFont,sans-serif;' +
+      'min-height:16px;text-align:center;';
+
+    var submitting = false;
+
+    // Server deployments only: a typed name may be an existing server vault
+    // (id or path basename). Same source the old native chooser listed
+    // (/api/vaults/list). No match (or endpoint unreachable) → create a
+    // LOCAL vault under a fresh uuid — exactly what the old native "Create
+    // new vault" flow did on this deployment type.
+    function serverLookupThenGo(name) {
+      function createLocalAndGo() {
+        var id = window.__owLocalVaults.create(name).id;
+        console.log('[obsidian-web] starter: created local vault', name, '->', id);
+        location.href = '/vault/' + encodeURIComponent(id);
+      }
+      fetch('/api/vaults/list')
+        .then(function (r) { return r.json(); })
+        .then(function (res) {
+          var lower = name.toLowerCase();
+          var hit = null;
+          Object.keys(res || {}).forEach(function (vid) {
+            if (hit) return;
+            var v = res[vid] || {};
+            var base = String(v.path || vid).split('/').pop();
+            if (vid === name || base === name || base.toLowerCase() === lower) hit = vid;
+          });
+          if (hit) { location.href = '/vault/' + encodeURIComponent(hit); return; }
+          createLocalAndGo();
+        })
+        .catch(function (e) {
+          console.warn('[obsidian-web] starter: vault list lookup failed, creating local:', e && e.message || e);
+          createLocalAndGo();
+        });
+    }
+
+    function submit() {
+      if (submitting) return;
+      var parsed = window.__owStarterUrl
+        ? window.__owStarterUrl.parseVaultUrlInput(input.value)
+        : { kind: 'error', error: 'Enter a vault URL or name.' };
+      if (parsed.kind === 'error') { err.textContent = parsed.error; input.focus(); return; }
+      err.textContent = '';
+      if (parsed.kind === 'url' || parsed.kind === 'path') {
+        submitting = true;
+        location.href = parsed.url;
+        return;
+      }
+      // kind === 'name' — already-registered local/folder vault first:
+      // exact id, then a case-insensitive NAME match (uuid-id vaults).
+      var name = parsed.name;
+      if (window.__owLocalVaults) {
+        if (window.__owLocalVaults.get(name)) {
+          submitting = true;
+          location.href = '/vault/' + encodeURIComponent(name);
+          return;
+        }
+        var list = window.__owLocalVaults.list();
+        var lower = name.toLowerCase();
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].name && list[i].name.toLowerCase() === lower) {
+            submitting = true;
+            location.href = '/vault/' + encodeURIComponent(list[i].id);
+            return;
           }
         }
       }
-    }
-    gate();
-    var obs = new MutationObserver(gate);
-    obs.observe(document.body, { childList: true, subtree: true });
-  }
-
-  // ── מספר-גרסה (§3.4) — לצד רכיב-הגרסה הקיים בכותרת-התחתונה של ה-onboarding ──
-  // window.__owVersion מוזרק רק ע"י בניית ה-CF (אותו ערוץ נפרד של __owBackend,
-  // §3.2) — בפריסת runtime-server הוא לעולם לא מוגדר ⇒ מציגים רק את הגרסה של
-  // Obsidian (הקיימת, ללא שינוי), לא "undefined". ה-footer (`.mod-version`)
-  // מרונדר ע"י מחלקת-הבסיס של מסכי ה-onboarding — לכל שלב-אשף יש instance
-  // משלו (הבקר שומר previousScreens) ⇒ MutationObserver מחיל מחדש בכל מסך,
-  // לא פעם אחת. הטקסט הקיים (`1.12.7`, קבוע בבאנדל) נקרא מה-DOM ולא מוכפל
-  // כליטרל חדש — נמנעים מהכפילות השישית (הבריף מזהה 4 כפילויות פונקציונליות
-  // קיימות + אזהרה מפורשת לא להוסיף עוד אחת).
-  function installVersionDisplay() {
-    if (!window.__owVersion) return;   // runtime-server / no-config → כלום, רק Obsidian
-    function apply() {
-      var els = document.querySelectorAll('.mobile-onboarding .mobile-onboarding-screen > footer > .mod-version');
-      for (var i = 0; i < els.length; i++) {
-        var el = els[i];
-        if (el.__owVersioned) continue;   // idempotent — פר-instance, לא re-prefix על מוטציה חוזרת
-        el.__owVersioned = true;
-        el.textContent = 'Markport ' + window.__owVersion + ' · Obsidian ' + el.textContent;
+      submitting = true;
+      if (window.__owBackend === 'none') {
+        // Client-only build — the name IS the vault id; the gate at
+        // /vault/<name> takes it from here (claim / unlock / create-local).
+        location.href = '/vault/' + encodeURIComponent(name);
+      } else {
+        serverLookupThenGo(name);
       }
     }
-    apply();
-    var obs = new MutationObserver(apply);
-    obs.observe(document.body, { childList: true, subtree: true });
-  }
 
-  // ── מסך-פתיחה נייטיב (no-vault) ─────────────────────────────────────────────
-  // אין VAULT_ID תקף (לא ב-/vault/<id> path, forceStarter, או שה-entry redirect
-  // למעלה כבר קבע שאין כספת-אחרונה — ראה למעלה). ה-shims כבר מותקנים (require/capacitor) — מזריקים
-  // ישירות את ה-bundle הנייטיב; מסך ה-vault-chooser שלו (Setup Sync/Create new
-  // vault/Open folder as vault + רשימה) מתרנדר מלא בלי שינוי (spike §0).
-  // choose()/stat() polyfill + seedNativeVaultList() + הגישור למעלה מחווטים
-  // את הרשימה + הבחירה + open-folder ל-vaults שלנו (folder-vault/OPFS/server).
-  if (!VAULT_ID) {
-    setStatus('Loading Obsidian mobile...');
-    installNativeVaultOpenBridge();
-    installCreateVaultInterceptor();
-    installExternalStorageGate();
-    installVersionDisplay();
-    installNeonSyncButton();
-    installVaultUrlField();
-    seedNativeVaultList()
-      .catch(function (err) { console.warn('[obsidian-web] seedNativeVaultList failed:', err); })
-      .then(function () {
-        injectMobileScripts();
-        removeLoadingOverlayWhen('.mobile-vault-chooser-screen, .mobile-onboarding');
-      });
-    return;
+    btn.addEventListener('click', function (e) { e.preventDefault(); submit(); });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); submit(); }
+    });
+
+    row.appendChild(input);
+    row.appendChild(btn);
+    card.appendChild(title);
+    card.appendChild(hint);
+    card.appendChild(row);
+    card.appendChild(err);
+    host.appendChild(card);
   }
 
   // folder vaults need a re-grant click (user gesture) whenever
@@ -1042,13 +985,9 @@ const MOBILE_SCRIPTS = [
       setStatus('Access to "' + handle.name + '" is needed to continue.');
       var btn = document.createElement('button');
       // §3.6: same `data-ow-injected` marking convention required of every
-      // button this file injects (installCreateVaultInterceptor above skips
-      // anything carrying it) — this one lives in `#ow-loading` (not under
-      // `.mobile-onboarding`/`.mobile-vault-chooser-screen`) so the
-      // interceptor's selector can never match it today, but "every button
-      // we inject gets marked" is the rule going forward, not "every button
-      // we've checked
-      // doesn't currently collide."
+      // button this file injects (the vault gate and the starter screen
+      // below follow it too) — "every button we inject gets marked" is the
+      // rule going forward.
       btn.setAttribute('data-ow-injected', 'grant-access');
       btn.textContent = 'Grant access to ' + handle.name;
       btn.style.cssText = 'margin-top:8px;padding:8px 16px;background:#7f6df2;color:#fff;' +
@@ -1084,162 +1023,6 @@ const MOBILE_SCRIPTS = [
   // back to the tab/app picks up external edits without a manual click.
   // VAULT_TYPE==='folder' guard only (DoD#4) — 'local' (OPFS) vaults can
   // never change externally, must stay a no-op.
-  // "Use Neon cloud synced vault" - injected directly UNDER Obsidian's own
-  // "Use my existing vault" on the bundle's start screen (app.js cte:
-  // .mobile-onboarding > .button-container with optionCreate/optionUseExisting).
-  // One click sets up the full client-only + Neon flow: a fresh local OPFS
-  // vault plus the ow-sync localStorage config that run-sync/run-pull read -
-  // i.e. a vault whose changes bidirectionally sync to the /sync/v1 endpoint
-  // backed by Neon Postgres (markport-sync deployment). The SYNC_TOKEN is
-  // typed by the user at click time and never ships in the bundle; the server
-  // URL defaults to this page's own origin (same deployment serves /sync/v1).
-  //
-  // Button matching: text first (the EN literal), structural fallback for
-  // localized UIs - the start screen is the only one carrying .logo, and it
-  // renders exactly two buttons in that container (Create / Use existing).
-  // Every injected element carries data-ow-injected (repo-wide convention -
-  // installCreateVaultInterceptor skips anything marked, and its mod-cta
-  // selector never matches this plain button anyway).
-  function installNeonSyncButton() {
-    function apply() {
-      var boxes = document.querySelectorAll('.mobile-onboarding .button-container');
-      for (var i = 0; i < boxes.length; i++) {
-        var box = boxes[i];
-        if (box.querySelector('[data-ow-injected="neon-sync"]')) continue;
-        var screen = box.closest('.mobile-onboarding');
-        var buttons = box.querySelectorAll('button');
-        var anchor = null;
-        for (var j = 0; j < buttons.length; j++) {
-          if (/use my existing vault/i.test(buttons[j].textContent)) { anchor = buttons[j]; break; }
-        }
-        if (!anchor && screen && screen.querySelector('.logo') && buttons.length === 2) {
-          anchor = buttons[1];
-        }
-        if (!anchor) continue;
-
-        var btn = document.createElement('button');
-        btn.setAttribute('data-ow-injected', 'neon-sync');
-        btn.textContent = 'Use Neon cloud synced vault';
-        btn.className = anchor.className;   // same look as "Use my existing vault"
-        btn.addEventListener('click', function (e) {
-          e.preventDefault();
-          e.stopImmediatePropagation();
-          startNeonVault();
-        });
-        anchor.parentNode.insertBefore(btn, anchor.nextSibling);
-      }
-    }
-    apply();
-    var obs = new MutationObserver(apply);
-    obs.observe(document.body, { childList: true, subtree: true });
-  }
-
-  // The flow behind the button: name -> token -> server (3 prompts, cancel at
-  // any point aborts without side effects), then create the OPFS vault, write
-  // its sync config, and navigate (path-based '/vault/<id>' reload, same as
-  // the create-vault interceptor's app-storage branch above).
-  function startNeonVault() {
-    var name = window.prompt('Vault name:', 'Neon Vault');
-    if (name === null) return;
-    name = name.trim() || 'Neon Vault';
-    var token = window.prompt('Sync token (the SYNC_TOKEN of the sync deployment):');
-    if (token === null) return;
-    token = token.trim();
-    if (!token) return;
-    var base = window.prompt('Sync server URL:', location.origin);
-    if (base === null) return;
-    base = base.trim().replace(/\/+$/, '');
-    if (!base) return;
-
-    var id = window.__owLocalVaults.create(name).id;
-    localStorage.setItem('ow-sync:' + id, JSON.stringify({ baseUrl: base, token: token }));
-    console.log('[obsidian-web] neon vault created:', id, '->', base);
-    navigateToVault(id);
-  }
-
-  // "Enter or claim URL" - the typed value IS the vault id, and we navigate to
-  // /vault/<name>, where showVaultGate() below handles password/claim. Rejects
-  // anything OW_VAULT_NAME_RE forbids, so a name that cannot be a path segment
-  // fails inline instead of 404-ing on the next page. Idempotency guard +
-  // MutationObserver match the other installers here: the onboarding controller
-  // detaches and re-renders screens, so apply() legitimately runs repeatedly.
-  function installVaultUrlField() {
-    function apply() {
-      var screens = document.querySelectorAll('.mobile-vault-chooser-screen, .mobile-onboarding');
-      for (var s = 0; s < screens.length; s++) {
-        var screen = screens[s];
-        if (screen.querySelector('[data-ow-injected="vault-url"]')) continue;
-        var cta = screen.querySelector('button.mod-cta');
-        if (!cta) continue;
-
-        var wrap = document.createElement('div');
-        wrap.setAttribute('data-ow-injected', 'vault-url');
-        wrap.style.cssText = 'display:flex;gap:8px;align-items:center;' +
-          'margin:12px auto 0;max-width:320px;' +
-          'font:13px -apple-system,BlinkMacSystemFont,sans-serif;';
-
-        var input = document.createElement('input');
-        input.type = 'text';
-        input.placeholder = 'Enter or claim URL';
-        input.setAttribute('aria-label', 'Vault URL or name');
-        input.autocapitalize = 'off';
-        input.autocomplete = 'off';
-        input.spellcheck = false;
-        input.style.cssText = 'flex:1;min-width:0;padding:8px 10px;' +
-          'border:1px solid var(--background-modifier-border,#bbb);border-radius:4px;' +
-          'background:var(--background-primary,#fff);color:var(--text-normal,#000);' +
-          'font:14px -apple-system,BlinkMacSystemFont,sans-serif;';
-
-        var err = document.createElement('span');
-        err.setAttribute('data-ow-injected', 'vault-url-err');
-        err.style.cssText = 'color:var(--text-error,#c0392b);font:12px -apple-system,BlinkMacSystemFont,sans-serif;';
-
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.textContent = 'Open';
-        btn.className = cta.className;
-        // Looks come from copying the bundle's CTA class, but
-        // installCreateVaultInterceptor hijacks every button.mod-cta in these
-        // screens - data-ow-injected is what makes it skip this one (§3.6).
-        btn.setAttribute('data-ow-injected', 'vault-url-open');
-        btn.setAttribute('aria-label', 'Open vault');
-        btn.addEventListener('click', function (e) {
-          e.preventDefault();
-          e.stopPropagation();
-          submit();
-        });
-
-        function submit() {
-          // Strip a pasted origin and /vault/ prefix so "myvault" and
-          // "https://host/vault/myvault" both land on /vault/myvault.
-          var raw = (input.value || '').trim();
-          var name = raw.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+/i, '').replace(/^\/+/, '');
-          name = name.replace(/^vault\//i, '').replace(/\/+$/, '');
-          if (name.indexOf('/') !== -1) name = name.split('/')[0];
-          if (!name) { err.textContent = 'Enter a vault name or URL.'; input.focus(); return; }
-          if (!OW_VAULT_NAME_RE.test(name)) {
-            err.textContent = 'Use letters, numbers, dot, dash or underscore (max 64).';
-            input.focus();
-            return;
-          }
-          err.textContent = '';
-          navigateToVault(name);
-        }
-
-        input.addEventListener('keydown', function (e) {
-          if (e.key === 'Enter') { e.preventDefault(); submit(); }
-        });
-
-        wrap.appendChild(input);
-        wrap.appendChild(btn);
-        wrap.appendChild(err);
-        cta.parentNode.insertBefore(wrap, cta.nextSibling);
-      }
-    }
-    apply();
-    var obs = new MutationObserver(apply);
-    obs.observe(document.body, { childList: true, subtree: true });
-  }
 
   // ── Vault name links (/vault/<name>) — password claims ─────────────────────
   // The name in a shared link IS the vault id. The sync server knows whether
@@ -1249,123 +1032,177 @@ const MOBILE_SCRIPTS = [
   // under the name itself, plus the ow-sync config run-sync/run-pull read
   // (baseUrl = this origin — the claim endpoint just answered on it; vault =
   // the name — the mpv1 token is only valid for that vault on /sync/v1).
+  //
+  // SESSION-SCOPED CREDENTIAL ("forget the password when the page is
+  // closed"): the token half of that config goes to sessionStorage — it dies
+  // with the tab, so a new session must re-enter the vault password. The
+  // NON-SECRET half (baseUrl + name) stays in localStorage under
+  // 'ow-sync-claimed:<name>' as the marker that tells the next boot this
+  // local vault is a synced one, so it re-prompts (showVaultGate's optional
+  // mode, wired into the verify flow below) instead of silently running
+  // unsynced. getSyncConfig in run-sync.js/run-pull.js reads sessionStorage
+  // FIRST, then localStorage — a manual operator config (raw SYNC_TOKEN,
+  // documented in the READMEs) keeps working exactly as before.
   var OW_VAULT_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
 
   function saveClaimedVault(name, token) {
     if (window.__owLocalVaults && !window.__owLocalVaults.get(name)) {
       window.__owLocalVaults.create(name, { id: name });   // id === name (type 'local')
     }
-    localStorage.setItem('ow-sync:' + name, JSON.stringify({
+    // Probe sessionStorage — some privacy modes disable it entirely. Without
+    // a fallback the claim flow would loop forever (unlock → "saved" →
+    // reload → credential missing → prompt → …), so when session storage is
+    // unavailable the credential degrades to localStorage (persistent —
+    // logged loudly) rather than break the vault.
+    var credStore = null;
+    try {
+      sessionStorage.setItem('ow-sync-probe', '1');
+      sessionStorage.removeItem('ow-sync-probe');
+      credStore = sessionStorage;
+    } catch (e) {
+      console.warn('[obsidian-web] sessionStorage unavailable — the sync credential will persist in localStorage instead of being forgotten on close');
+      credStore = localStorage;
+    }
+    credStore.setItem('ow-sync:' + name, JSON.stringify({
       baseUrl: location.origin,
       token: token,
       vault: name,
     }));
+    localStorage.setItem('ow-sync-claimed:' + name, JSON.stringify({
+      baseUrl: location.origin,
+      vault: name,
+    }));
+    // Legacy cleanup: earlier builds kept the token itself in localStorage
+    // (90 days). When the credential went to sessionStorage, drop any
+    // leftover persistent copy — the marker above replaces it (same rule as
+    // migrateLegacyClaimTokens at the top). Skipped when credStore IS
+    // localStorage (the fallback just wrote there — removing would undo it).
+    if (credStore === sessionStorage) {
+      try { localStorage.removeItem('ow-sync:' + name); } catch (e) {}
+    }
     console.log('[obsidian-web] claimed vault ready:', name);
   }
 
-  // Starter screen (installCreateVaultInterceptor's app-storage branch):
-  // look up the typed name, then claim it — or hand off to its gate if
-  // someone else already did. Server unreachable / no /sync/v1 on this
-  // deployment → fall back to the old local-only create (nothing was
-  // written yet, so the fallback is side-effect free). Cancel at the
-  // password prompt aborts the whole creation (onAbort releases the
-  // interceptor's one-shot guard).
-  function lookupAndClaimVault(name, onAbort) {
-    var endpoint = '/sync/v1/vaults/' + encodeURIComponent(name);
-    fetch(endpoint, { cache: 'no-store' })
-      .then(function (res) {
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        return res.json();
-      })
-      .then(function (info) {
-        if (info && info.claimed) {
-          navigateToVault(name);   // its password gate (showVaultGate) takes it from here
-          return;
-        }
-        var pw = window.prompt('Choose a password to claim the vault "' + name +
-          '" (at least 8 characters):');
-        if (pw === null) { onAbort(); return; }   // changed their mind — create nothing
-        if (pw.length < 8) {
-          window.alert('Password must be at least 8 characters.');
-          onAbort();
-          return;
-        }
-        fetch(endpoint, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ password: pw }),
-        })
-          .then(function (res) {
-            if (res.status === 401) return { raced: true };   // claimed by someone else meanwhile
-            if (!res.ok) {
-              return res.json().then(function (b) {
-                throw new Error((b && b.error) || ('HTTP ' + res.status));
-              });
-            }
-            return res.json();
-          })
-          .then(function (body) {
-            if (body && body.raced) { navigateToVault(name); return; }
-            if (!body || !body.token) throw new Error('no token in claim response');
-            saveClaimedVault(name, body.token);
-            navigateToVault(name);
-          })
-          .catch(function (err) {
-            console.warn('[obsidian-web] claim failed:', err && err.message || err);
-            window.alert('Could not claim "' + name + '": ' + ((err && err.message) || 'request failed'));
-            onAbort();
-          });
-      })
-      .catch(function (err) {
-        // Status check failed — server down or this deployment has no
-        // /sync/v1 → behave exactly like before: a local-only vault.
-        console.warn('[obsidian-web] vault lookup failed, creating local vault:', err && err.message || err);
-        var id = window.__owLocalVaults.create(name).id;
-        navigateToVault(id);
-      });
+  // The non-secret "this local vault syncs with a server" marker written by
+  // saveClaimedVault. Presence WITHOUT a live session token is what triggers
+  // the password re-prompt on a new session's boot.
+  function getSyncClaimMarker(name) {
+    try {
+      var raw = localStorage.getItem('ow-sync-claimed:' + name);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
   }
+
 
   // The gate for an unrecognized /vault/<name> on a client-only build
   // (replaces the old "not on this device" rejection — see the verify branch
   // below). Renders inside the existing #ow-loading overlay (like
   // showGrantScreen): status text + password field + Unlock/Claim + Back.
-  // Success registers the vault and RELOADS — VAULT_TYPE was already
-  // resolved to 'server' before verify ran, so boot must start over with
-  // the fresh registry entry ('local') rather than continue in place; this
-  // promise therefore never settles. Wrong password / rate limit keep the
-  // form up with an inline error; Back and network failure reject with the
-  // old human message (owHuman → shared .catch → /starter).
-  function showVaultGate(name) {
+  //
+  // Two modes:
+  //  - claim/unlock (default): the sync server decides — claimed → password
+  //    unlock, unclaimed → password claim. A deployment with NO sync
+  //    endpoint at all (404/405/501 — the Cloudflare build ships none)
+  //    offers an explicit "Create it here" local-vault fallback instead, so
+  //    a typo'd deep link never silently mints an empty vault. Success
+  //    registers the vault and RELOADS — VAULT_TYPE was already resolved to
+  //    'server' before verify ran, so boot must start over with the fresh
+  //    registry entry ('local') rather than continue in place; this promise
+  //    therefore never settles. Wrong password / rate limit keep the form up
+  //    with an inline error; Back and network failure reject with the old
+  //    human message (owHuman → shared .catch → /starter).
+  //  - resume (opts.optional): an already-local claimed vault booting in a
+  //    NEW session — the sessionStorage credential is gone BY DESIGN (the
+  //    password is forgotten when the page closes). No status fetch (the
+  //    localStorage marker already says it's claimed): password → session
+  //    token → RESOLVE {unlocked:true}, boot continues in place (no reload —
+  //    VAULT_TYPE is already 'local'). "Continue without syncing" or a dead
+  //    network resolves {skipped:true}: the vault still opens offline, sync
+  //    just stays off for this session.
+  function showVaultGate(name, opts) {
+    var optional = !!(opts && opts.optional);
     return new Promise(function (resolve, reject) {
       var overlay = document.getElementById('ow-loading');
       var host = overlay || document.body;
+      var wrap = null;
+
+      function removeGate() {
+        if (wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap);
+        wrap = null;
+      }
 
       function bail() {
+        if (optional) { removeGate(); resolve({ skipped: true }); return; }
         var err = new Error('This vault isn\'t on this device — vaults are stored locally in the browser.');
         err.owHuman = true;
         reject(err);
       }
 
-      setStatus('Checking vault "' + name + '"...');
-      fetch('/sync/v1/vaults/' + encodeURIComponent(name), { cache: 'no-store' })
-        .then(function (res) {
-          if (!res.ok) throw new Error('HTTP ' + res.status);
-          return res.json();
-        })
-        .then(function (info) {
-          renderGate(!!(info && info.claimed));
-        })
-        .catch(function (err) {
-          console.warn('[obsidian-web] vault gate: status check failed:', err && err.message || err);
-          bail();
+      // No sync endpoint on this deployment (CF ships none — its worker
+      // answers 404 like any unknown asset): the name can still become a
+      // plain LOCAL vault, but only on explicit confirmation.
+      function renderLocalCreateFallback() {
+        if (!OW_VAULT_NAME_RE.test(name)) { bail(); return; }
+        setStatus('No vault named "' + name + '" on this device — and this site has no sync server to ask.');
+        wrap = document.createElement('div');
+        wrap.setAttribute('data-ow-injected', 'vault-gate');
+        wrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-top:12px;' +
+          'max-width:320px;font:13px -apple-system,BlinkMacSystemFont,sans-serif;';
+        var row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:8px;';
+        var create = document.createElement('button');
+        create.setAttribute('data-ow-injected', 'vault-gate-create');
+        create.textContent = 'Create it here';
+        create.style.cssText = 'padding:8px 16px;background:#7f6df2;color:#fff;border:none;' +
+          'border-radius:4px;cursor:pointer;font:13px -apple-system,BlinkMacSystemFont,sans-serif;';
+        var back = document.createElement('button');
+        back.setAttribute('data-ow-injected', 'vault-gate-cancel');
+        back.textContent = 'Back';
+        back.style.cssText = 'padding:8px 16px;background:transparent;color:#888;' +
+          'border:1px solid #bbb;border-radius:4px;cursor:pointer;' +
+          'font:13px -apple-system,BlinkMacSystemFont,sans-serif;';
+        create.addEventListener('click', function () {
+          window.__owLocalVaults.create(name, { id: name });
+          console.log('[obsidian-web] gate: created local vault', name);
+          location.reload();   // re-boot as 'local' (never settles here)
         });
+        back.addEventListener('click', bail);
+        row.appendChild(create);
+        row.appendChild(back);
+        wrap.appendChild(row);
+        host.appendChild(wrap);
+      }
+
+      if (optional) {
+        renderGate(true);   // claimed by definition — the marker says so
+      } else {
+        setStatus('Checking vault "' + name + '"...');
+        fetch('/sync/v1/vaults/' + encodeURIComponent(name), { cache: 'no-store' })
+          .then(function (res) {
+            if (res.status === 404 || res.status === 405 || res.status === 501) {
+              renderLocalCreateFallback();   // no sync endpoint on this deployment
+              return null;
+            }
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.json();
+          })
+          .then(function (info) {
+            if (info) renderGate(!!(info && info.claimed));
+          })
+          .catch(function (err) {
+            console.warn('[obsidian-web] vault gate: status check failed:', err && err.message || err);
+            bail();
+          });
+      }
 
       function renderGate(claimed) {
-        setStatus(claimed
-          ? 'Vault "' + name + '" is password-protected — enter its password to open it.'
-          : 'No vault named "' + name + '" exists yet — choose a password to claim it. It will be created on this device and synced to this server.');
+        setStatus(optional
+          ? 'Vault "' + name + '" syncs with the server — enter its password to turn syncing on. It is forgotten again when you close this tab.'
+          : claimed
+            ? 'Vault "' + name + '" is password-protected — enter its password to open it.'
+            : 'No vault named "' + name + '" exists yet — choose a password to claim it. It will be created on this device and synced to this server.');
 
-        var wrap = document.createElement('div');
+        wrap = document.createElement('div');
         wrap.setAttribute('data-ow-injected', 'vault-gate');
         wrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;margin-top:12px;' +
           'max-width:320px;font:13px -apple-system,BlinkMacSystemFont,sans-serif;';
@@ -1391,7 +1228,7 @@ const MOBILE_SCRIPTS = [
 
         var back = document.createElement('button');
         back.setAttribute('data-ow-injected', 'vault-gate-cancel');
-        back.textContent = 'Back';
+        back.textContent = optional ? 'Continue without syncing' : 'Back';
         back.style.cssText = 'padding:8px 16px;background:transparent;color:#888;' +
           'border:1px solid #bbb;border-radius:4px;cursor:pointer;' +
           'font:13px -apple-system,BlinkMacSystemFont,sans-serif;';
@@ -1426,6 +1263,14 @@ const MOBILE_SCRIPTS = [
               if (!body) { submit.disabled = false; return; }   // error line already set
               if (!body.token) throw new Error('no token in claim response');
               saveClaimedVault(name, body.token);
+              if (optional) {
+                // Session resume — VAULT_TYPE is already 'local', so boot
+                // continues in place (no reload); the startup sync right
+                // after this gate picks the fresh session token up.
+                removeGate();
+                resolve({ unlocked: true });
+                return;
+              }
               location.reload();   // re-boot as a 'local' vault (never settles here)
             })
             .catch(function (err) {
@@ -1440,7 +1285,7 @@ const MOBILE_SCRIPTS = [
           if (e.key === 'Enter') submitPassword();
         });
         back.addEventListener('click', function () {
-          if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+          removeGate();
           bail();
         });
 
@@ -1619,9 +1464,13 @@ const MOBILE_SCRIPTS = [
     // when the bidirectional runner is actually loaded.
     var runner = window.__owSyncRunSync || window.__owSyncRunPull;
     if (!runner) return;
-    var cfg = runner.getSyncConfig(VAULT_ID);
-    if (!cfg) return; // guard — no config → no buttons, no network (DoD#6)
+    if (!runner.getSyncConfig(VAULT_ID)) return; // guard — no config → no buttons, no network (DoD#6)
     var hasPush = !!window.__owSyncRunSync;
+    // Live re-read, NOT a mount-time capture: the credential is
+    // sessionStorage-scoped now, and a session can gain/refresh its token
+    // after this function has already run (the resume gate writes it during
+    // verify). Every run() call must use the CURRENT config.
+    function syncCfg() { return runner.getSyncConfig(VAULT_ID); }
 
     // lucide "cloud-download"/"cloud-upload" path data (stable across lucide
     // releases — unlike the refresh icon, these weren't grepped from this
@@ -1688,7 +1537,7 @@ const MOBILE_SCRIPTS = [
       setBusy(true);
       var p;
       try {
-        p = runner.run(VAULT_ID, cfg, mode); // 'pull' | 'push'
+        p = runner.run(VAULT_ID, syncCfg(), mode); // 'pull' | 'push'
       } catch (e) {
         p = Promise.reject(e); // sync throw must not leave the spinner on
       }
@@ -1768,6 +1617,87 @@ const MOBILE_SCRIPTS = [
       if (running) setBusy(true);
     }
 
+    // ── auto-push: edits sync in the background ──────────────────────────
+    // Manual buttons alone meant changes sat on the device until someone
+    // remembered to click (and a failed click looked like "sync is
+    // broken"). Now:
+    //   • vault events (create/modify/delete/rename) debounce ~20s, then a
+    //     quiet 'push' run — success only logs (no toast spam), failure
+    //     notifies at most once per 5 minutes;
+    //   • hiding/closing the tab flushes a best-effort push immediately
+    //     (visibilitychange/pagehide — no guarantee the network finishes,
+    //     but the debounce above means most edits are already up);
+    //   • ~45s after boot, one delayed push catches anything edited DURING
+    //     the startup sync (which planned from a pre-edit local manifest).
+    // Pushing never rewrites local files, so running it under a live app is
+    // safe; pulling mid-session is deliberately NOT automatic (OPFS writes
+    // behind Obsidian's back only show after a reload) — the startup sync
+    // and the manual Pull button cover that side.
+    var AUTO_PUSH_DEBOUNCE_MS = 20000;
+    var AUTO_PUSH_MIN_GAP_MS = 45000;
+    var AUTO_FAIL_NOTICE_GAP_MS = 5 * 60 * 1000;
+    var autoPushTimer = null;
+    var autoFlushTimer = null;
+    var lastAutoPushAt = 0;
+    var lastAutoFailNoticeAt = 0;
+
+    function autoPush(reason) {
+      if (!hasPush) return;
+      var cfgNow = syncCfg();
+      if (!cfgNow) return;                       // credential gone (session ended elsewhere) — stay quiet
+      if (running) return;                       // manual sync in flight
+      var runnerStatus = runner.getStatus && runner.getStatus();
+      if (runnerStatus && runnerStatus !== 'idle') {   // busy (startup sync / another run) — retry shortly
+        scheduleAutoPush(30000);
+        return;
+      }
+      var now = Date.now();
+      if (now - lastAutoPushAt < AUTO_PUSH_MIN_GAP_MS) {
+        scheduleAutoPush(AUTO_PUSH_MIN_GAP_MS - (now - lastAutoPushAt));
+        return;
+      }
+      lastAutoPushAt = now;
+      var p;
+      try {
+        p = runner.run(VAULT_ID, cfgNow, 'push');
+      } catch (e) {
+        p = Promise.reject(e);
+      }
+      Promise.resolve(p)
+        .then(function (r) {
+          if (r && (r.reason === 'busy' || r.skipped === true)) { scheduleAutoPush(30000); return; }
+          if (r && (r.pushed || r.deleted)) console.log('[ow-sync] auto-push (' + reason + '):', r);
+        })
+        .catch(function (e) {
+          console.warn('[ow-sync] auto-push (' + reason + ') failed:', (e && e.message) || e);
+          var t = Date.now();
+          if (t - lastAutoFailNoticeAt >= AUTO_FAIL_NOTICE_GAP_MS) {
+            lastAutoFailNoticeAt = t;
+            notify('Auto-sync failed: ' + ((e && e.message) || e) + ' — will retry on your next edit', 10000);
+          }
+        });
+    }
+
+    function scheduleAutoPush(delayMs) {
+      if (autoPushTimer) clearTimeout(autoPushTimer);
+      autoPushTimer = setTimeout(function () {
+        autoPushTimer = null;
+        autoPush('debounced');
+      }, delayMs === undefined ? AUTO_PUSH_DEBOUNCE_MS : delayMs);
+    }
+
+    // Tab going away: one short-debounce flush (browsers keep timers alive
+    // briefly after 'hidden'; pagehide covers close/navigate).
+    function flushAutoPush() {
+      if (autoPushTimer) { clearTimeout(autoPushTimer); autoPushTimer = null; }
+      if (autoFlushTimer) clearTimeout(autoFlushTimer);
+      autoFlushTimer = setTimeout(function () { autoPush('tab-hidden'); }, 300);
+    }
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) flushAutoPush();
+    });
+    window.addEventListener('pagehide', flushAutoPush);
+
     // same App.onload race guard as installFolderRefreshWatch above
     // (app.vault can exist before app.workspace).
     owWhenAppReady(function (app) {
@@ -1781,6 +1711,32 @@ const MOBILE_SCRIPTS = [
         setTimeout(function () { whenWorkspaceReady((tries || 0) + 1); }, 50);
       }
       whenWorkspaceReady(0);
+
+      if (hasPush && app.vault && typeof app.vault.on === 'function') {
+        ['create', 'modify', 'delete', 'rename'].forEach(function (ev) {
+          try { app.vault.on(ev, function () { scheduleAutoPush(); }); } catch (e) { }
+        });
+        // Edits made WHILE the startup sync ran were invisible to its local
+        // manifest (built before them) — one delayed push picks them up.
+        scheduleAutoPush(45000);
+      }
+    });
+  }
+
+  // ── startup-sync deadline helper ──────────────────────────────────────────
+  // Promise.race with a deadline, so a wedged sync server can't keep the
+  // vault from opening. The losing promise keeps running in the background
+  // (the runner's mutex reports later runs as busy until it settles —
+  // auto-push reschedules instead of stacking up).
+  var OW_STARTUP_SYNC_TIMEOUT_MS = 4 * 60 * 1000;
+  function owWithTimeout(promise, ms) {
+    return new Promise(function (resolve, reject) {
+      var t = setTimeout(function () {
+        reject(new Error('sync did not finish within ' + Math.round(ms / 1000) + 's — opening the vault anyway'));
+      }, ms);
+      Promise.resolve(promise).then(
+        function (v) { clearTimeout(t); resolve(v); },
+        function (e) { clearTimeout(t); reject(e); });
     });
   }
 
@@ -1818,14 +1774,16 @@ const MOBILE_SCRIPTS = [
     // exactly the r/ObsidianMD scenario, §0). window.__owBackend==='none' is
     // a client-only BUILD (injected only by the CF/Vercel build, see
     // index.html/build-assets) — there is no /api/fs to ask, so instead of
-    // the old immediate human error, showVaultGate (defined next to
-    // startNeonVault above) asks the sync server whether the name is
-    // claimed and renders the password prompt (claim-or-unlock) in this
-    // same overlay. Success registers the name + its mpv1 token and
+    // the old immediate human error, showVaultGate (above) asks the sync
+    // server whether the name is claimed and renders the password prompt
+    // (claim-or-unlock) in this same overlay. Success registers the name +
+    // its mpv1 token (sessionStorage — forgotten when the tab closes) and
     // reloads; failure rejects with the SAME human message as before
-    // (err.owHuman, shared .catch below → no "Error: " prefix). Offline /
-    // no /sync/v1 → that exact old path, unchanged (DoD: runtime-server
-    // never sets __owBackend, so it still runs the /api/fs stat branch).
+    // (err.owHuman, shared .catch below → no "Error: " prefix). A
+    // deployment with no /sync/v1 at all (404 — the CF build) gets an
+    // explicit "create it here" local-vault fallback instead; offline →
+    // that exact old error path, unchanged (DoD: runtime-server never sets
+    // __owBackend, so it still runs the /api/fs stat branch).
     verifyPromise = showVaultGate(VAULT_ID);
   } else {
     verifyPromise = fetch('/api/fs/stat?vault=' + encodeURIComponent(VAULT_ID) + '&path=')
@@ -1847,6 +1805,74 @@ const MOBILE_SCRIPTS = [
       // (window.__owNativeVaultBridgeInstalled) — בטוח לקרוא גם אם הענף
       // no-vault כבר התקין (לא קורה באותו טעינת-עמוד, אבל להיות עקבי).
       installNativeVaultOpenBridge();
+
+      // ── session credential resume — claimed (synced) vaults ──────────────
+      // The mpv1 token is sessionStorage-only ("forget the password when the
+      // page is closed"), so every NEW session of a claimed vault starts
+      // with the localStorage marker but no credential. Ask for the password
+      // once, HERE, before Obsidian loads: the unlock writes the session
+      // token, and the startup sync right below can use it immediately.
+      // "Continue without syncing" (or a dead network) resolves skipped —
+      // the vault still opens; this session just stays offline/unsynced.
+      if (VAULT_TYPE === 'local' && getSyncClaimMarker(VAULT_ID)) {
+        var resumeRunner = window.__owSyncRunSync || window.__owSyncRunPull;
+        var haveSessionCfg = resumeRunner && resumeRunner.getSyncConfig(VAULT_ID);
+        if (!haveSessionCfg) {
+          try {
+            await showVaultGate(VAULT_ID, { optional: true });
+          } catch (e) {
+            console.warn('[obsidian-web] sync unlock skipped:', (e && e.message) || e);
+          }
+        }
+      }
+
+      // ── startup sync — BEFORE Obsidian loads (the "better syncing" core) ──
+      // Pulling while the app runs was always half-broken: files land in
+      // OPFS behind Obsidian's back and the explorer only sees them after a
+      // full reload (hence the old confirm()+reload Pull button). Syncing
+      // HERE — after verify, before injectMobileScripts — means downloaded
+      // files are on disk before the vault is first read, so they simply
+      // appear: no reload, no stale explorer. The seed guard below also sees
+      // the synced content (a fresh non-empty claim never gets example
+      // content seeded over server files). Failures NEVER block boot:
+      // offline or a dead sync server just logs, and the vault opens with
+      // whatever is local. A stuck run is capped by the deadline
+      // (owWithTimeout) — boot proceeds; the run keeps going in the
+      // background (mutex → later auto-pushes skip until it settles).
+      var startupSyncSummary = null;
+      if (VAULT_TYPE === 'local') {
+        var startupRunner = window.__owSyncRunSync || window.__owSyncRunPull;
+        var startupCfg = startupRunner && startupRunner.getSyncConfig(VAULT_ID);
+        if (startupRunner && startupCfg) {
+          setStatus('Syncing…');
+          try {
+            startupSyncSummary = await owWithTimeout(
+              startupRunner.run(VAULT_ID, startupCfg, 'both'),
+              OW_STARTUP_SYNC_TIMEOUT_MS);
+            if (startupSyncSummary && startupSyncSummary.reason === 'busy') startupSyncSummary = null;
+            console.log('[ow-sync] startup sync:', startupSyncSummary);
+          } catch (e) {
+            console.warn('[ow-sync] startup sync failed (opening local content):', (e && e.message) || e);
+            startupSyncSummary = { failed: (e && e.message) || String(e) };
+          }
+        }
+      }
+      // Report the startup run once the app can show Notices (window.Notice
+      // exists only after the bundle loads — owWhenAppReady polls for it).
+      if (startupSyncSummary) {
+        (function (summary) {
+          owWhenAppReady(function () {
+            if (typeof window.Notice !== 'function') return;
+            if (summary.failed) {
+              new window.Notice('Sync failed: ' + summary.failed + ' — opened local content only', 10000);
+            } else if (summary.downloaded || summary.pushed || summary.deleted || summary.conflicts) {
+              new window.Notice('Synced: ' + (summary.downloaded || 0) + ' pulled, ' +
+                (summary.pushed || 0) + ' pushed' +
+                (summary.conflicts ? ', ' + summary.conflicts + ' conflicts (kept as copies)' : ''), 8000);
+            }
+          });
+        })(startupSyncSummary);
+      }
 
       // ── seed guard — empty-vault-only (seed-demo §0/§3ב, data-safety core) ──
       // A local/folder vault the user already has real content in must NEVER

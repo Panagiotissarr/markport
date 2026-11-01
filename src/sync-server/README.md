@@ -26,6 +26,16 @@ Both `SYNC_TOKEN` and `VAULT_PATH` are **required** — the server refuses to
 start without them (fail-closed), rather than starting in a broken or
 insecure state.
 
+> **Do not deploy this to Vercel (or any serverless host).** It is a
+> long-running `bun` process that reads a **directory on disk**: a function
+> has no writable vault, no `VAULT_PATH`, and exports `{ createApp }` rather
+> than a request handler — every request answers `500`
+> (`FUNCTION_INVOCATION_FAILED`), which the Obsidian plugin surfaces as
+> `manifest: HTTP 500`. The deployable app + `/sync/v1` API (Postgres/Neon
+> store, vault passwords, push) lives in **`src/deployments/vercel`**; point a
+> Vercel project's root directory there, never here. This server is for
+> running yourself, next to a real vault folder.
+
 | Env var | Required | Default | Meaning |
 |---|---|---|---|
 | `SYNC_TOKEN` | yes | — | Bearer token clients must present. Server exits at boot if unset. |
