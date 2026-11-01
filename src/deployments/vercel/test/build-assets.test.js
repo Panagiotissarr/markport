@@ -20,11 +20,11 @@ const PUBLIC_DIR = path.join(VERCEL_DIR, 'public');
 
 let fixtureRoot;
 
-function runBuild(root) {
+function runBuild(root, extraEnv) {
   return spawnSync(process.execPath, [BUILD_SCRIPT], {
     cwd: VERCEL_DIR,
     encoding: 'utf8',
-    env: { ...process.env, OW_BUILD_ASSETS_ROOT: root },
+    env: { ...process.env, OW_BUILD_ASSETS_ROOT: root, ...(extraEnv || {}) },
   });
 }
 
@@ -94,6 +94,23 @@ test('full fixture build: copies, cache-busts, injects, and drops no markers', (
   assert.ok(html.includes('window.__owDemoContent='), 'demo hash not injected');
   assert.match(html, /src="\/client-mobile\/[^"]+\?v=\d+"/, 'cache buster not applied');
 
+  // Vercel Web Analytics: the exact markup @vercel/analytics's inject() would
+  // append, in <head>, deferred, with the installed SDK version.
+  const analyticsPkg = JSON.parse(
+    fs.readFileSync(path.join(VERCEL_DIR, 'node_modules', '@vercel', 'analytics', 'package.json'), 'utf8')
+  );
+  const analyticsTag = new RegExp(
+    '<script defer src="/_vercel/insights/script\\.js" data-sdkn="@vercel/analytics" data-sdkv="' +
+      analyticsPkg.version.replace(/\./g, '\\.') +
+      '"></script>'
+  );
+  assert.match(html, analyticsTag, 'analytics tag not injected into <head>');
+  assert.ok(
+    html.indexOf('/_vercel/insights/script.js') < html.indexOf('</head>'),
+    'analytics tag must be inside <head>'
+  );
+  assert.equal(html.match(/\/_vercel\/insights\/script\.js/g).length, 1, 'analytics tag duplicated');
+
   const sw = fs.readFileSync(path.join(PUBLIC_DIR, 'sw.js'), 'utf8');
   assert.ok(!sw.includes('__OW_BUILD__'), 'sw.js BUILD_ID not replaced');
   assert.ok(/const BUILD_ID = ['"]?\d+/.test(sw) || sw.includes(String(Math.floor(Date.now() / 1000)).slice(0, 4)),
@@ -120,4 +137,16 @@ test('full fixture build: copies, cache-busts, injects, and drops no markers', (
   // the LiveSync install step must not have crashed the build (it warns and
   // continues offline — vendor/plugins is absent in this environment)
   assert.match(res.stdout, /Done\./);
+});
+
+test('OW_ANALYTICS=off drops the tag (local dev builds)', () => {
+  const res = runBuild(fixtureRoot, { OW_ANALYTICS: 'off' });
+  assert.equal(res.status, 0, 'build failed:\n' + res.stdout + '\n' + res.stderr);
+  assert.match(res.stdout, /analytics: skipped \(OW_ANALYTICS=off\)/);
+
+  const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
+  assert.ok(!html.includes('/_vercel/insights/'), 'analytics tag survived OW_ANALYTICS=off');
+  // the rest of the pipeline is untouched by the opt-out
+  assert.ok(html.includes('window.__owConfigInjected='), 'config not injected');
+  assert.ok(html.includes('window.__owBackend="none"'), 'backend flag not injected');
 });

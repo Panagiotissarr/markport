@@ -206,6 +206,11 @@ self.addEventListener('fetch', (e) => {
   if (url.origin !== self.location.origin) return;        // cross-origin (CouchDB/GitHub) → pass-through
   if (url.pathname.startsWith('/api/')) return;           // dynamic → network-only
   if (url.pathname.startsWith('/sync/')) return;          // sync protocol → network-only: a cached manifest/blob would make devices decide against STALE server state (the protocol's own cache-control is the only cache allowed here)
+  // Vercel platform endpoints — Web Analytics/Speed Insights SDK
+  // (/_vercel/insights/script.js). Not ours to cache: a stale SDK pinned by
+  // this cache would outlive the deploy that changed it. The beacons
+  // themselves are POSTs and already bypass at the method check above.
+  if (url.pathname.startsWith('/_vercel/')) return;
   if (url.pathname === '/sw.js') return;                  // ה-SW עצמו — לעולם לא מ-cache (שהדפדפן יזהה גרסה חדשה)
 
   // /_owres/ — vault resource serving (OPFS/folder binaries), MUST be before
