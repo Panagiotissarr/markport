@@ -103,6 +103,12 @@ jobs:
           key: obsidian-mobile-${{ steps.pin.outputs.version }}
 
       - name: Download the Obsidian mobile bundle
+        # The release lookup is unauthenticated without this and shares its
+        # 60/hour rate limit with every other job on the runner's IP. The
+        # updater only ever sends the token to api.github.com, never to the
+        # asset host it redirects to.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node scripts/update-obsidian-mobile.js --version "${{ steps.pin.outputs.version }}"
 
       - name: Verify the bundle is the version we asked for
