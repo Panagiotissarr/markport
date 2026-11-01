@@ -47,22 +47,27 @@ function mustExist(file, hint) {
 }
 
 // ── Vercel Web Analytics ────────────────────────────────────────────────────
-// @vercel/analytics's inject() appends exactly this to document.head in a
-// browser: a deferred script plus its SDK dataset (see the package's
-// loadProps/getScriptSrc — path "/_vercel/insights/script.js" in production,
-// data-sdkn = the package name, data-sdkv = its version). inject() cannot be
-// called HERE: it early-returns without a DOM, so calling it at build time is
-// a silent no-op. Emitting the markup it would have produced at runtime is the
-// equivalent for a static shell, and it keeps the SDK path/version sourced
-// from the installed package instead of hand-copied.
+// The build writes a handle, boot.js does the loading. A <script defer> in
+// <head> looked like the obvious equivalent of the SDK's inject() — it emits
+// the same markup inject() appends at runtime — but it never fired: boot.js is
+// a synchronous script at the end of <body> and, on the entry routes (/,
+// /mobile), calls location.replace() to pick a vault. Starting a navigation
+// while the parser is still running cancels every deferred script in the
+// document, so the tag was discarded on exactly the loads a visitor normally
+// makes. Injecting from boot.js, after the route decision, means the request
+// only happens on a page that is actually going to stay.
+//
+// The path/version come from the installed package rather than being
+// hand-copied (dataset shape matches what inject() sets: data-sdkn is the
+// package name, data-sdkv its version, read by the SDK via currentScript).
 //
 // VERCEL OUTPUT ONLY. src/client-mobile/index.html is shared by three targets;
-// the Cloudflare build and the Node server serve no /_vercel/* routes, so a tag
-// there would 404 on every boot. OW_ANALYTICS=off skips it (local dev builds,
-// where /_vercel/insights/script.js does not exist either).
+// the Cloudflare build and the Node server serve no /_vercel/* routes, so the
+// handle stays an inert comment there and boot.js does nothing. OW_ANALYTICS=off
+// omits it (local dev builds, where the insights script does not exist either).
 const ANALYTICS_SRC = '/_vercel/insights/script.js';
 
-function analyticsTag() {
+function analyticsHandle() {
   const require = createRequire(import.meta.url);
   let version;
   try {
@@ -74,8 +79,11 @@ function analyticsTag() {
     );
   }
   return (
-    `<script defer src="${ANALYTICS_SRC}"` +
-    ` data-sdkn="@vercel/analytics" data-sdkv="${version}"></script>`
+    '<script>window.__owAnalytics={"src":' +
+    JSON.stringify(ANALYTICS_SRC) +
+    ',"sdkn":"@vercel/analytics","sdkv":' +
+    JSON.stringify(version) +
+    '};</script>'
   );
 }
 
@@ -232,17 +240,14 @@ async function build() {
     'OW_BACKEND_INJECT'
   );
 
-  // ── Vercel Web Analytics (see analyticsTag() above for why this is emitted
-  // here rather than by calling inject()) ─────────────────────────────────
+  // ── Vercel Web Analytics handle (see analyticsHandle() above) ────────────
   if (process.env.OW_ANALYTICS === 'off') {
+    html = injectMarker(html, '<!-- OW_ANALYTICS_INJECT -->', '', 'OW_ANALYTICS_INJECT');
     console.log('  analytics: skipped (OW_ANALYTICS=off)');
   } else {
-    if (!html.includes('</head>')) {
-      fail('</head> not found in index.html — refusing to ship a build without analytics.');
-    }
-    const tag = analyticsTag();
-    html = html.replace('</head>', '  ' + tag + '\n</head>');
-    console.log('  analytics: injected ' + ANALYTICS_SRC);
+    const handle = analyticsHandle();
+    html = injectMarker(html, '<!-- OW_ANALYTICS_INJECT -->', handle, 'OW_ANALYTICS_INJECT');
+    console.log('  analytics: handle injected for ' + ANALYTICS_SRC);
   }
 
   fs.writeFileSync(indexPath, html);

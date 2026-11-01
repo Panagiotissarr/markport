@@ -94,22 +94,25 @@ test('full fixture build: copies, cache-busts, injects, and drops no markers', (
   assert.ok(html.includes('window.__owDemoContent='), 'demo hash not injected');
   assert.match(html, /src="\/client-mobile\/[^"]+\?v=\d+"/, 'cache buster not applied');
 
-  // Vercel Web Analytics: the exact markup @vercel/analytics's inject() would
-  // append, in <head>, deferred, with the installed SDK version.
+  // Vercel Web Analytics: a handle boot.js loads from, not a <script defer> in
+  // <head> (a deferred tag is cancelled when boot.js calls location.replace()
+  // during parsing — see the analyticsHandle() comment).
+  assert.ok(!html.includes('<!-- OW_ANALYTICS_INJECT -->'), 'analytics marker survived');
+  assert.ok(!/<script[^>]+src="\/_vercel\/insights\/script\.js"/.test(html),
+    'head still carries an analytics script tag — boot.js must be the loader');
   const analyticsPkg = JSON.parse(
     fs.readFileSync(path.join(VERCEL_DIR, 'node_modules', '@vercel', 'analytics', 'package.json'), 'utf8')
   );
-  const analyticsTag = new RegExp(
-    '<script defer src="/_vercel/insights/script\\.js" data-sdkn="@vercel/analytics" data-sdkv="' +
-      analyticsPkg.version.replace(/\./g, '\\.') +
-      '"></script>'
+  const handle = JSON.parse(
+    /window\.__owAnalytics=(\{.*?\});<\/script>/.exec(html)[1]
   );
-  assert.match(html, analyticsTag, 'analytics tag not injected into <head>');
+  assert.equal(handle.src, '/_vercel/insights/script.js', 'handle src wrong');
+  assert.equal(handle.sdkn, '@vercel/analytics', 'handle sdkn wrong');
+  assert.equal(handle.sdkv, analyticsPkg.version, 'handle sdkv must be the installed version');
   assert.ok(
-    html.indexOf('/_vercel/insights/script.js') < html.indexOf('</head>'),
-    'analytics tag must be inside <head>'
+    html.indexOf('window.__owAnalytics=') < html.indexOf('/client-mobile/boot.js'),
+    'handle must be defined before boot.js reads it'
   );
-  assert.equal(html.match(/\/_vercel\/insights\/script\.js/g).length, 1, 'analytics tag duplicated');
 
   const sw = fs.readFileSync(path.join(PUBLIC_DIR, 'sw.js'), 'utf8');
   assert.ok(!sw.includes('__OW_BUILD__'), 'sw.js BUILD_ID not replaced');
@@ -145,7 +148,9 @@ test('OW_ANALYTICS=off drops the tag (local dev builds)', () => {
   assert.match(res.stdout, /analytics: skipped \(OW_ANALYTICS=off\)/);
 
   const html = fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
-  assert.ok(!html.includes('/_vercel/insights/'), 'analytics tag survived OW_ANALYTICS=off');
+  assert.ok(!html.includes('window.__owAnalytics='), 'analytics handle survived OW_ANALYTICS=off');
+  assert.ok(!html.includes('/_vercel/insights/'), 'insights path survived OW_ANALYTICS=off');
+  assert.ok(!html.includes('<!-- OW_ANALYTICS_INJECT -->'), 'marker survived OW_ANALYTICS=off');
   // the rest of the pipeline is untouched by the opt-out
   assert.ok(html.includes('window.__owConfigInjected='), 'config not injected');
   assert.ok(html.includes('window.__owBackend="none"'), 'backend flag not injected');

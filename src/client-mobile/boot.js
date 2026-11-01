@@ -225,6 +225,35 @@ const MOBILE_SCRIPTS = [
     return;   // מנווטים החוצה — אין מה לעשות יותר בטיק הזה
   }
 
+  // ── Vercel Web Analytics ──────────────────────────────────────────────────
+  // The build injects window.__owAnalytics (src/deployments/vercel/scripts/
+  // build-assets.js); this function loads it. Deliberately NOT a
+  // <script defer> in <head>, which is where it started: this file runs
+  // synchronously while the document is still parsing, and the entry routes
+  // above call location.replace() — starting a navigation at that point
+  // cancels every deferred script in the document, so the head tag was thrown
+  // away on exactly the loads a visitor normally makes, and nothing was ever
+  // counted. Reaching this line means the route decision is over and this
+  // document is going to render.
+  //
+  // Vercel only: the Cloudflare and Node targets serve no /_vercel/ route and
+  // leave the marker as a comment, so cfg is undefined and this is a no-op.
+  function owLoadAnalytics() {
+    var cfg = window.__owAnalytics;
+    if (!cfg || !cfg.src) return;
+    if (window.__owAnalyticsLoaded) return;   // one load per document
+    window.__owAnalyticsLoaded = true;
+    var s = document.createElement('script');
+    s.src = cfg.src;
+    s.async = true;
+    // The SDK reads these off document.currentScript (inject() sets the same
+    // two attributes when it creates the tag).
+    if (cfg.sdkn) s.setAttribute('data-sdkn', cfg.sdkn);
+    if (cfg.sdkv) s.setAttribute('data-sdkv', cfg.sdkv);
+    (document.head || document.documentElement).appendChild(s);
+  }
+  owLoadAnalytics();
+
   // ── Demo vault — lazy create-if-missing (seed-demo §3ג) ────────────────────
   // Fixed-id demo vault (window.__owConfig.demoVault.id, default
   // '0000demo0000demo') — NOT registered ahead of time (brief §0 decision 2:
