@@ -172,11 +172,20 @@ can never outlive the deploy that changed it.
 OW_ANALYTICS=off npm run build   # local/dev build: no tag, no 404s
 ```
 
-Web Analytics must also be **enabled for the project** in the Vercel dashboard
-(Settings → Analytics) or the script 404s — the deployment already carries a
-`webAnalytics` id, so this is a checkbox, not a code change. `test/build-assets.test.js`
-asserts the tag is present, inside `<head>`, appearing once, and absent under
-`OW_ANALYTICS=off`.
+Vercel **auto-enables** Web Analytics for the project when it detects the SDK,
+so there is no dashboard step of its own; the project carries a `webAnalytics`
+id from the first deployment that shipped the tag. Point it the other way round
+and it silently collects nothing: a deployment whose HTML has no tag, or one
+that predates the enable, produces no data and (once enabled) a `404` on
+`script.js`.
+
+The build runs in **GitHub Actions**, not on Vercel's builders — `vendor/` is
+Obsidian's bundle and is gitignored, so the workflow downloads it, builds
+`public/`, and `vercel deploy` ships that directory as-is. The
+`analytics: <tag>` line in the artifact-verification step is therefore the
+authoritative record of what the browser receives; the Vercel build log shows
+only packaging. `test/build-assets.test.js` asserts the tag is present, inside
+`<head>`, appearing once, and absent under `OW_ANALYTICS=off`.
 
 ## Security
 
