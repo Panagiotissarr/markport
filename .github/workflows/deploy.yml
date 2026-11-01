@@ -163,6 +163,17 @@ jobs:
             echo "::error::only $files files in $public - that is not a complete build" >&2
             exit 1
           fi
+          # Web Analytics: this job is the build. Vercel only packages the
+          # uploaded public/, so this log is the only place the injected tag
+          # can be observed before (or instead of) a browser.
+          if [ "${OW_ANALYTICS:-}" = "off" ]; then
+            echo "  analytics: off (OW_ANALYTICS=off)"
+          elif grep -q '/_vercel/insights/script.js' "$public/index.html"; then
+            echo "  analytics: $(grep -o '<script[^>]*/_vercel/insights/script.js[^>]*>' "$public/index.html")"
+          else
+            echo "::error::$public/index.html has no /_vercel/insights/script.js tag" >&2
+            exit 1
+          fi
 
       - name: Deploy to Vercel
         working-directory: src/deployments/vercel
