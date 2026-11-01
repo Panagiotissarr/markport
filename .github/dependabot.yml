@@ -8,6 +8,13 @@
 # `npm test` script) but no dependencies and no lockfile, so there is nothing
 # to resolve.
 #
+#
+# cooldown: Dependabot already waits 3 days before offering a new version
+# (that default applies even when this key is absent, and never applies to
+# security updates). Declaring it splits the wait by bump size, which is what
+# actually matters when a bad release lands: 14 days for a major we would
+# review by hand anyway, 7 for a minor, 3 for a patch.
+#
 # The github-actions entry matters more than it looks. The deploy workflow pins
 # actions/checkout@v4, actions/setup-node@v4 and actions/cache@v4 — all of
 # which target Node 20 and are currently forced onto Node 24 by the runner
@@ -25,6 +32,10 @@ updates:
       time: "06:00"
       timezone: Europe/Athens
     open-pull-requests-limit: 5
+    cooldown:
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
     commit-message:
       prefix: "chore(deps,site)"
     groups:
@@ -45,6 +56,10 @@ updates:
       time: "06:00"
       timezone: Europe/Athens
     open-pull-requests-limit: 5
+    cooldown:
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
     commit-message:
       prefix: "chore(deps,vercel)"
     groups:
@@ -60,6 +75,10 @@ updates:
       time: "06:00"
       timezone: Europe/Athens
     open-pull-requests-limit: 5
+    cooldown:
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
     commit-message:
       prefix: "chore(deps,cloudflare)"
     groups:
@@ -75,6 +94,10 @@ updates:
       time: "06:00"
       timezone: Europe/Athens
     open-pull-requests-limit: 5
+    cooldown:
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
     commit-message:
       prefix: "chore(deps,runtime-server)"
     groups:
@@ -90,6 +113,10 @@ updates:
       time: "06:00"
       timezone: Europe/Athens
     open-pull-requests-limit: 5
+    cooldown:
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
     commit-message:
       prefix: "chore(deps,sync-server)"
     groups:
@@ -105,6 +132,10 @@ updates:
       time: "06:00"
       timezone: Europe/Athens
     open-pull-requests-limit: 5
+    cooldown:
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
     commit-message:
       prefix: "chore(deps,actions)"
     groups:
