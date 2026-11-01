@@ -601,7 +601,7 @@ const MOBILE_SCRIPTS = [
     var key = owVersionKey(v);
     if (!isNaN(key) && key >= 11300) {
       return 'Obsidian ' + v + ' did not start. This version asks its host for a ' +
-             'startup acknowledgement that Markport does not provide. The newest ' +
+             'startup acknowledgement that Oryn does not provide. The newest ' +
              'version known to work here is 1.12.7 — see the README.';
     }
     return 'Obsidian ' + (v ? v + ' ' : '') + 'did not start: nothing rendered after the ' +
@@ -848,7 +848,7 @@ const MOBILE_SCRIPTS = [
       'width:min(92vw,360px);padding:8px 0;' +
       'font:14px -apple-system,BlinkMacSystemFont,sans-serif;';
 
-    var brand = (window.__owConfig && window.__owConfig.branding && window.__owConfig.branding.name) || 'Markport';
+    var brand = (window.__owConfig && window.__owConfig.branding && window.__owConfig.branding.name) || 'Oryn';
     var title = document.createElement('div');
     title.textContent = brand;
     title.style.cssText = 'font-size:24px;font-weight:600;text-align:center;' +

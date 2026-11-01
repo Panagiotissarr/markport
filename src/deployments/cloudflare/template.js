@@ -48,13 +48,13 @@ export const TEMPLATE_FILES = new Map([
 
   // ── Notes ─────────────────────────────────────────────────────────────────
 
-  ['Welcome.md', `# Welcome to Markport
+  ['Welcome.md', `# Welcome to Oryn
 
 > **Obsidian's desktop app — running in your browser, no Electron needed.**
 
 **This is a demo vault.** Create your own from the vault switcher.
 
-This is a live demo of **Markport** (formerly obsidian-web), an open-source project that runs Obsidian's original renderer in a standard browser by replacing every Capacitor/Electron dependency with lightweight browser-native shims.
+This is a live demo of **Oryn** (formerly Markport), an open-source project that runs Obsidian's original renderer in a standard browser by replacing every Capacitor/Electron dependency with lightweight browser-native shims.
 
 **Everything works in the browser:** edit notes, create folders, rename files. Your changes are stored **locally in your browser** (via [OPFS](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system)) — private to you and never sent to a server. They survive a page reload and stick around until you clear this site's browsing data.
 
@@ -88,7 +88,7 @@ This is a live demo of **Markport** (formerly obsidian-web), an open-source proj
 
 ---
 
-**[GitHub](https://github.com/MusiCode1/markport)** | Built by [MusiCode1](https://github.com/MusiCode1) and [Claude Code](https://claude.ai/code)
+**[GitHub](https://github.com/Panagiotissarr/oryn)** | Built by [MusiCode1](https://github.com/MusiCode1) and [Claude Code](https://claude.ai/code)
 
 > [!important] Disclaimer
 > This is an educational proof-of-concept, not an official Obsidian product. Not affiliated with or endorsed by [Obsidian](https://obsidian.md) or Dynalist Inc.
@@ -98,7 +98,7 @@ This is a live demo of **Markport** (formerly obsidian-web), an open-source proj
 
   ['How It Works.md', `# How It Works
 
-**Markport** runs Obsidian's original renderer code (\`app.js\`) completely unmodified — byte-for-byte identical to Obsidian's own Android bundle, zero build-time patches. Instead of forking Obsidian, we replace the Capacitor/Node.js/Electron APIs it depends on with browser-compatible shims, and adjust platform behaviour (mobile vs. desktop layout) at runtime via \`client-mobile/platform-bridge.js\`, which intercepts \`Object.defineProperty\` instead of touching a single byte of \`app.js\`.
+**Oryn** runs Obsidian's original renderer code (\`app.js\`) completely unmodified — byte-for-byte identical to Obsidian's own Android bundle, zero build-time patches. Instead of forking Obsidian, we replace the Capacitor/Node.js/Electron APIs it depends on with browser-compatible shims, and adjust platform behaviour (mobile vs. desktop layout) at runtime via \`client-mobile/platform-bridge.js\`, which intercepts \`Object.defineProperty\` instead of touching a single byte of \`app.js\`.
 
 ## Architecture
 
@@ -140,7 +140,7 @@ Key shims:
 - [[Welcome]] ← back to the main page
 - [[Features/Markdown Showcase]]
 
-#architecture #markport
+#architecture #oryn
 `],
 
   ['Features/Markdown Showcase.md', `# Markdown Showcase

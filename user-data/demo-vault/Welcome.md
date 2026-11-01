@@ -1,6 +1,6 @@
-# Welcome to Obsidian Web
+# Welcome to Oryn
 
-This is a test vault for the obsidian-web project.
+This is a test vault for the Oryn project.
 
 ## Features to test
 

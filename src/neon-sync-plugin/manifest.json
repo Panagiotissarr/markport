@@ -1,9 +1,9 @@
 {
   "id": "markport-neon-sync",
-  "name": "Markport Neon Sync",
-  "version": "0.2.4",
+  "name": "Oryn Neon Sync",
+  "version": "0.2.5",
   "minAppVersion": "1.4.0",
-  "description": "Bidirectional sync with a Markport /sync/v1 server (Neon Postgres on Vercel). Paste your claimed vault URL, enter the password, sync. Works on desktop and mobile.",
-  "author": "Markport",
+  "description": "Bidirectional sync with an Oryn /sync/v1 server (Neon Postgres on Vercel). Paste your claimed vault URL, enter the password, sync. Works on desktop and mobile.",
+  "author": "Oryn",
   "isDesktopOnly": false
 }

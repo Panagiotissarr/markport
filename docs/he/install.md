@@ -1,9 +1,9 @@
 ---
-title: "להריץ את Markport בעצמך - Markport"
-description: "איך מריצים מופע משלך של Markport, סטטית או על שרת Node."
+title: "להריץ את Oryn בעצמך - Oryn"
+description: "איך מריצים מופע משלך של Oryn, סטטית או על שרת Node."
 ---
 
-# להריץ את Markport בעצמך
+# להריץ את Oryn בעצמך
 
 > אין מופע ציבורי, במכוון. הדף הזה הוא איך מריצים אחד משלך.
 
@@ -20,8 +20,8 @@ description: "איך מריצים מופע משלך של Markport, סטטית א
 צריך **Node 18 ומעלה**, ועותק של המנוע של Obsidian.
 
 ```bash
-git clone https://github.com/MusiCode1/markport
-cd markport
+git clone https://github.com/Panagiotissarr/oryn
+cd oryn
 node scripts/update-obsidian-mobile.js --version 1.12.7
 ```
 
@@ -86,10 +86,10 @@ npm run build
 אוטומטי בשינוי חיצוני קיימים ב-Chromium בלבד. ‏Firefox ו-Safari מקבלים כספות מקומיות בדפדפן;
 ב-Safari הכתיבה ל-OPFS הגיעה הרבה אחרי הקריאה, אז כדאי לבדוק את הגרסה.
 
-**‏Markport אינו מיוצר על-ידי Obsidian, אינו מסונף אליה ואינו מאושר על ידה.** מה שאתה מריץ
+**‏Oryn אינו מיוצר על-ידי Obsidian, אינו מסונף אליה ואינו מאושר על ידה.** מה שאתה מריץ
 הוא מופע משלך, על המחשב שלך, מבאנדל שהורדת בעצמך.
 
 ---
 
 כל השאר - הארכיטקטורה, שכבת השימים, הרציונל - נמצא ב[הערות הארכיטקטורה](/he/architecture)
-וב[ריפוזיטורי](https://github.com/MusiCode1/markport).
+וב[ריפוזיטורי](https://github.com/Panagiotissarr/oryn).

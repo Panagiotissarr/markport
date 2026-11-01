@@ -1,7 +1,7 @@
-# Markport Neon Sync (Obsidian plugin)
+# Oryn Neon Sync (Obsidian plugin)
 
 Bidirectional sync between **any Obsidian vault** (desktop or mobile) and a
-Markport `/sync/v1` backend — the Vercel + Neon deployment (e.g.
+Oryn `/sync/v1` backend — the Vercel + Neon deployment (e.g.
 `https://notes.sarris.dev`). Same protocol, same decision rules as the
 browser client (`src/client-mobile/sync/`), so a browser vault and an
 Obsidian vault can share one server-side vault and all sync through the
@@ -40,17 +40,17 @@ same CAS/conflict semantics.
 
 Everything needed lives in this directory — `main.js` + `manifest.json` —
 plus a ready-to-extract
-[release/markport-neon-sync-0.2.4.zip](release/markport-neon-sync-0.2.4.zip)
+[release/oryn-neon-sync-0.2.5.zip](release/oryn-neon-sync-0.2.5.zip)
 committed alongside (rebuild any time with
-`zip -j release/markport-neon-sync-0.2.4.zip main.js manifest.json README.md`).
+`zip -j release/oryn-neon-sync-0.2.5.zip main.js manifest.json README.md`).
 On GitHub, open a file and use **Download raw file**; the `neon-sync-v*`
 releases carry each version's changelog. If a release also has the loose
 `main.js` / `manifest.json` attached as assets (`gh release upload
-neon-sync-v0.2.4 src/neon-sync-plugin/main.js src/neon-sync-plugin/manifest.json`
+neon-sync-v0.2.5 src/neon-sync-plugin/main.js src/neon-sync-plugin/manifest.json`
 from your own machine — the build sandbox can't reach GitHub's upload
 endpoint), the [BRAT](https://github.com/TfTHacker/obsidian42-brat) plugin can
 install and update straight from it (*Add beta plugin* →
-`Panagiotissarr/obby-v2`) — the easiest route on **mobile**.
+`Panagiotissarr/oryn`) — the easiest route on **mobile**.
 
 ### Desktop
 
@@ -59,7 +59,7 @@ install and update straight from it (*Add beta plugin* →
 2. Put `main.js` and `manifest.json` into it (extract the zip from
    `release/`, download the raw files from GitHub, or copy them from this
    directory after a checkout).
-3. Obsidian → Settings → Community plugins → enable **Markport Neon Sync**.
+3. Obsidian → Settings → Community plugins → enable **Oryn Neon Sync**.
    ("Restricted mode" must be off.)
 
 ### Mobile
@@ -69,7 +69,7 @@ install and update straight from it (*Add beta plugin* →
    cloud-synced vault, cable copy, or the files app
    (Android; on iOS the vault must live in the Files app, e.g. "On My
    iPhone"), **or** install once on desktop and sync the vault over first.
-2. Open Obsidian → Settings → Community plugins → enable **Markport Neon
+2. Open Obsidian → Settings → Community plugins → enable **Oryn Neon
    Sync**. `manifest.json` declares `isDesktopOnly: false`, so it loads on
    Android/iOS too.
 

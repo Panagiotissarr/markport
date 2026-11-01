@@ -1,9 +1,9 @@
-# Which Obsidian version does Markport run?
+# Which Obsidian version does Oryn run?
 
 > Written in English on purpose, unlike most of `docs/` - the in-app failure message points
 > users here, and not all of them read Hebrew.
 
-**Short answer: Obsidian 1.12.7.** That is the newest version Markport runs, and the pin is
+**Short answer: Obsidian 1.12.7.** That is the newest version Oryn runs, and the pin is
 deliberate - not a lag in maintenance.
 
 ## If you point it at 1.13 or newer
@@ -11,7 +11,7 @@ deliberate - not a lag in maintenance.
 The app will not start. You'll see this instead of the loading spinner:
 
 > Obsidian 1.13.4 did not start. This version asks its host for a startup acknowledgement that
-> Markport does not provide. The newest version known to work here is 1.12.7 - see the README.
+> Oryn does not provide. The newest version known to work here is 1.12.7 - see the README.
 
 Nothing is broken on your side and there is nothing to fix. Run
 `node scripts/update-obsidian-mobile.js --version 1.12.7` to go back.
@@ -27,7 +27,7 @@ it, the renderer compares it against its own copy. Measured 2026-09-05 against b
 
 | | Channel | If it doesn't match |
 |---|---|---|
-| Mobile bundle (what Markport runs) | `App.getInfo().terms` (Capacitor) | `throw new Error` |
+| Mobile bundle (what Oryn runs) | `App.getInfo().terms` (Capacitor) | `throw new Error` |
 | Desktop bundle | `ipcRenderer.sendSync("terms")` (Electron IPC) | `window.close()` |
 
 Reconstructed, not copied: the shipped builds are minified, and the mobile one is TypeScript's ES5 downlevel - a generator state machine. Names and shape are ours; the control flow and the channels are theirs. The acknowledgement itself is elided.
@@ -96,7 +96,7 @@ with `grep -a`; not in `classes2.dex`) and reaches the renderer through Capacito
 So the acknowledgement is not something the user types or accepts anywhere. It is a constant that
 ships inside Obsidian's own client, on both halves of it.
 
-On a real Android device, Obsidian's own native layer supplies it. Markport replaces that
+On a real Android device, Obsidian's own native layer supplies it. Oryn replaces that
 native layer with browser shims, and those shims don't supply it - `capacitor-shim.js` ships
 `terms` empty, and `shims/electron.js` answers the `terms` IPC channel with an empty string for
 the same reason.
@@ -117,9 +117,9 @@ accept either `true` or a non-empty **array**, which is kept as-is and used as a
 ids. The default, when no policy is supplied, is everything permitted; the object is
 `Object.freeze`d and only the first value wins.
 
-Markport's shims do not implement `getManagedPolicy` at all. On 1.12.7 that is moot - nothing
+Oryn's shims do not implement `getManagedPolicy` at all. On 1.12.7 that is moot - nothing
 calls it. On 1.13+ the call would reject, Obsidian's own `try` would swallow it, and the app
-would run with the permissive default. So an admin-supplied policy would not reach a Markport
+would run with the permissive default. So an admin-supplied policy would not reach an Oryn
 instance even if one were configured on the device. Nothing here is a workaround: it is simply
 not implemented, and it is not what stops 1.13 from starting.
 
@@ -134,7 +134,7 @@ is not something we're willing to ship. Obsidian is not open source; this is the
 and it's their call to make.
 
 To be explicit about what is in the code: `App.getInfo()` passes through whatever value the person
-running the instance has provided in their own browser, and **ships empty**. Markport does not
+running the instance has provided in their own browser, and **ships empty**. Oryn does not
 contain the acknowledgement text and does not supply it. Out of the box, on 1.13+, the app does
 not start - which is the intended behaviour.
 

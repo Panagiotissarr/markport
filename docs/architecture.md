@@ -1,15 +1,15 @@
 ---
-title: "Architecture - Markport"
-description: "How Markport runs Obsidian's renderer in a browser, and why it is built this way."
+title: "Architecture - Oryn"
+description: "How Oryn runs Obsidian's renderer in a browser, and why it is built this way."
 ---
 
-# Architecture - Markport
+# Architecture - Oryn
 
 > Audience: people changing the code. The "why", not the "how to use it" (that is `README.md`).
 
 ## What this is
 
-Markport runs Obsidian's own renderer (the upstream bundle, `vendor/obsidian-mobile/`) in a
+Oryn runs Obsidian's own renderer (the upstream bundle, `vendor/obsidian-mobile/`) in a
 standard browser, using shims that stand in for Electron and Capacitor. After the mobile-first
 collapse there is **one core** (`client-mobile`) with a **swappable backend**, not two runtimes.
 

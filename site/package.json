@@ -2,7 +2,7 @@
   "name": "markport-site",
   "private": true,
   "type": "module",
-  "description": "The markport.pages.dev site. Build-only; entirely separate from the app and its dependencies.",
+  "description": "The Oryn documentation site (markport.pages.dev). Build-only; entirely separate from the app and its dependencies.",
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",

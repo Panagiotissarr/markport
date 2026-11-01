@@ -1,9 +1,9 @@
 ---
-title: "Running Markport yourself - Markport"
-description: "How to run your own instance of Markport, statically or on a Node server."
+title: "Running Oryn yourself - Oryn"
+description: "How to run your own instance of Oryn, statically or on a Node server."
 ---
 
-# Running Markport yourself
+# Running Oryn yourself
 
 > There is no public instance, on purpose. This page is how you run your own.
 
@@ -20,8 +20,8 @@ There are two ways to run it, and they share the same browser-side core. Pick wh
 You need **Node 18 or newer**, and a copy of Obsidian's renderer.
 
 ```bash
-git clone https://github.com/MusiCode1/markport
-cd markport
+git clone https://github.com/Panagiotissarr/oryn
+cd oryn
 node scripts/update-obsidian-mobile.js --version 1.12.7
 ```
 
@@ -89,10 +89,10 @@ fine for trying it out.
 and auto-refresh on external file changes are Chromium-only. Firefox and Safari get browser-local
 vaults; Safari shipped OPFS writes much later than reads, so check your version.
 
-**Markport is not made by, affiliated with, or endorsed by Obsidian.** What you run is your own
+**Oryn is not made by, affiliated with, or endorsed by Obsidian.** What you run is your own
 instance, on your own machine, from a bundle you downloaded yourself.
 
 ---
 
 Anything else - the architecture, the shim layer, the reasoning - is in
-[the architecture notes](/architecture) and the [repository](https://github.com/MusiCode1/markport).
+[the architecture notes](/architecture) and the [repository](https://github.com/Panagiotissarr/oryn).

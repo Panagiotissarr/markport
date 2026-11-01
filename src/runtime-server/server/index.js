@@ -238,7 +238,7 @@ function startServer(appConfig = config) {
 
   server.listen(appConfig.port, appConfig.host, () => {
     console.log('==========================================');
-    console.log('  Markport');
+    console.log('  Oryn');
     console.log('==========================================');
     console.log('  Vault:    ' + appConfig.vaultPath);
     console.log('  Obsidian: ' + appConfig.obsidianMobilePath);
