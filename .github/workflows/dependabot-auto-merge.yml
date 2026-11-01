@@ -1,0 +1,63 @@
+name: Dependabot auto-merge
+
+# Queues patch-level Dependabot PRs for merge. GitHub only completes the merge
+# once the required checks on main are green — this workflow does not merge
+# anything itself.
+#
+# TWO REPOSITORY SETTINGS MAKE THIS SAFE, AND NEITHER LIVES IN THIS FILE:
+#   1. Settings > General > Pull Requests > Allow auto-merge
+#   2. A branch protection rule / ruleset on main that REQUIRES the CI checks
+# Without (2) the --auto call has nothing to wait for and merges almost
+# immediately, which is the opposite of what this is for.
+#
+# WHY PATCHES ONLY: main is production. deploy.yml runs on push to main, so an
+# auto-merged dependency is an auto-deployed dependency — no human reads the
+# diff. A patch is the only bump class where that trade is reasonable here.
+
+on:
+  pull_request:
+
+permissions:
+  contents: write        # required to complete a merge
+  pull-requests: write   # required by `gh pr merge --auto`
+
+jobs:
+  auto-merge:
+    runs-on: ubuntu-latest
+    steps:
+      # Only ever Dependabot's own PRs. A human PR that happens to be
+      # patch-sized must still be merged by a human.
+      - name: Check the actor
+        if: github.actor != 'dependabot[bot]'
+        run: echo "not a Dependabot PR - nothing to do"
+
+      - name: Fetch Dependabot metadata
+        if: github.actor == 'dependabot[bot]'
+        id: meta
+        uses: dependabot/fetch-metadata@v3
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # KNOWN BLIND SPOT, even for patches: src/deployments/cloudflare
+      # (wrangler) and site (astro) have no CI job. Their build tests need the
+      # gitignored Obsidian bundle and a live network call respectively, so
+      # ci.yml skips them. A bad bump there breaks the next manual build, not
+      # the running site — a different failure mode from a bad `pg` in the
+      # sync lambdas, which is why the gate below is patch and not minor.
+      - name: Queue patch updates
+        if: |
+          github.actor == 'dependabot[bot]' &&
+          steps.meta.outputs.update-type == 'version-update:semver-patch'
+        run: gh pr merge --auto --merge "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Explain why a non-patch was left alone
+        if: |
+          github.actor == 'dependabot[bot]' &&
+          steps.meta.outputs.update-type != 'version-update:semver-patch'
+        run: |
+          echo "::notice title=Left for review::${{
+            steps.meta.outputs.dependency-names }} is a ${{
+            steps.meta.outputs.update-type }} bump, not a patch"

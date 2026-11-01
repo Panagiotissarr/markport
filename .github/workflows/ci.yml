@@ -12,11 +12,14 @@
 # test/build-assets.test.js builds a fixture tree — so the copy/inject/patch
 # pipeline is still exercised.
 #
-# WHAT IS DELIBERATELY MISSING
-# src/sync-server and src/deployments/cloudflare run under `bun test` (see their
-# package.json), and cloudflare's proxy test talks to the real network. Adding
-# them means adding oven-sh/setup-bun to this workflow — worth doing, but not
-# worth guessing at untested on the way in.
+# src/sync-server runs under `bun test`, so it gets its own job below.
+#
+# STILL MISSING: src/deployments/cloudflare. Its build test executes
+# scripts/build-assets.sh, which needs vendor/obsidian-mobile/ — a 40 MB
+# download from GitHub releases that only the deploy workflow does — and its
+# proxy test talks to the real network. Downloading the bundle on every PR to
+# validate a wrangler bump is not worth it; see dependabot-auto-merge.yml,
+# which says so where it matters.
 
 name: CI
 
@@ -63,3 +66,24 @@ jobs:
       - name: Test
         working-directory: ${{ matrix.package }}
         run: npm test
+
+  # 26 tests, no network, no vendor/. Verified locally against bun 1.4.4.
+  # `bun install` rather than --frozen-lockfile: this package still keeps a
+  # package-lock.json and bun.lock is gitignored, so there is no lockfile to
+  # freeze against.
+  bun-suites:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.x'
+
+      - name: Install
+        working-directory: src/sync-server
+        run: bun install
+
+      - name: Test
+        working-directory: src/sync-server
+        run: bun test
