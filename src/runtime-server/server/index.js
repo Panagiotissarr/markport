@@ -112,10 +112,16 @@ function createApp(appConfig = {}) {
   // open, shareable vault URL. Both serve the same shell as / — boot.js
   // reads location.pathname to decide what to render. Not a redirect: the
   // id must stay visible/bookmarkable in the browser URL.
-  // /vault/:id/* (docs/plans/vault-note-deeplink.md §3ד): document-level
+  // /vault/:id/*splat (docs/plans/vault-note-deeplink.md §3ד): document-level
   // deep link — /vault/<id>/<note-path> (note-path may have nested
   // segments). Same shell; boot.js parses id + note-path from the path.
-  app.get(['/starter', '/starter.html', '/vault/:id', '/vault/:id/*'], (req, res) => {
+  //
+  // The wildcard MUST be named: express 5 routes through path-to-regexp v8,
+  // which rejects an anonymous `*` ("Missing parameter name") at registration
+  // time — i.e. the whole server fails to boot, not just this route. `*splat`
+  // is v8 syntax and matches one or more segments, so `/vault/:id` stays a
+  // separate entry above.
+  app.get(['/starter', '/starter.html', '/vault/:id', '/vault/:id/*splat'], (req, res) => {
     sendHtmlWithCacheBust(res, path.join(appConfig.clientMobilePath, 'index.html'));
   });
 
