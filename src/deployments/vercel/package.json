@@ -17,6 +17,6 @@
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",
-    "pg": "^8.13.1"
+    "pg": "^8.23.1"
   }
 }
