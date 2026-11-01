@@ -1,0 +1,77 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+
+reviews:
+  profile: assertive
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  sequence_diagrams: false
+  estimate_code_review_effort: true
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+
+  path_filters:
+    - "!release/**"
+    - "!vendor/**"
+    - "!**/*.lock"
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!**/coverage/**"
+
+  path_instructions:
+    - path: "src/deployments/vercel/**"
+      instructions: |
+        Treat this code as security-sensitive infrastructure.
+        Review authentication, authorization, token handling, vault ownership,
+        input validation, request size limits, rate limiting, cache headers,
+        database transactions, SQL safety, and error handling.
+        Never weaken security controls to make tests pass.
+        Ensure private vault data cannot be accessed without authorization.
+
+    - path: "neon-sync-plugin/**"
+      instructions: |
+        Review Obsidian plugin compatibility, synchronization correctness,
+        data integrity, error handling, and backward compatibility.
+        Do not change the plugin ID markport-neon-sync, its install folder,
+        or persisted configuration formats without a justified migration plan.
+
+    - path: "plugins/**"
+      instructions: |
+        Check plugin API compatibility, manifest correctness,
+        settings persistence, and compatibility with existing installations.
+        Treat plugin IDs and persisted data formats as stable interfaces.
+
+    - path: "runtime-server/**"
+      instructions: |
+        Review request handling, authentication, authorization,
+        filesystem access, path traversal, input validation, and error handling.
+
+    - path: "site/**"
+      instructions: |
+        Review accessibility, SEO, responsive behavior, performance,
+        and consistency with Oryn branding.
+        Avoid unnecessary dependencies and visual complexity.
+
+    - path: "**/*.{js,mjs,cjs,ts,tsx}"
+      instructions: |
+        Check correctness, maintainability, unsafe assumptions,
+        unhandled promises, race conditions, resource leaks,
+        and unnecessary complexity.
+
+    - path: "**/*.{json,jsonc}"
+      instructions: |
+        Validate syntax and configuration compatibility.
+        Be careful with identifiers and keys consumed by existing clients.
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  opt_out: false
