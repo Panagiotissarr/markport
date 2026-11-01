@@ -185,6 +185,8 @@ src/
 
 site/                       the documentation site (Astro)
 docs/                       architecture, install, Obsidian version notes (EN + HE)
+docs/wiki/                  source for the GitHub wiki — edit here, then
+                            scripts/publish-wiki.sh mirrors it out
 scripts/                    updater / patcher for Obsidian's bundle
 vendor/                     extracted Obsidian bundles — gitignored, downloaded locally
 user-data/                  shipped demo vault + runtime vault registry
