@@ -95,7 +95,7 @@ jobs:
       # Both paths are required: the updater skips the ~40 MB download only when
       # the APK is still in its own cache dir, so caching vendor/ alone re-downloads.
       - name: Cache the Obsidian bundle
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             vendor/obsidian-mobile
