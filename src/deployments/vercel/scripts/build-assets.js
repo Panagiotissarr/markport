@@ -24,6 +24,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -43,6 +44,39 @@ function fail(message) {
 
 function mustExist(file, hint) {
   if (!fs.existsSync(file)) fail(hint ? `${file} not found. ${hint}` : `${file} not found.`);
+}
+
+// ── Vercel Web Analytics ────────────────────────────────────────────────────
+// @vercel/analytics's inject() appends exactly this to document.head in a
+// browser: a deferred script plus its SDK dataset (see the package's
+// loadProps/getScriptSrc — path "/_vercel/insights/script.js" in production,
+// data-sdkn = the package name, data-sdkv = its version). inject() cannot be
+// called HERE: it early-returns without a DOM, so calling it at build time is
+// a silent no-op. Emitting the markup it would have produced at runtime is the
+// equivalent for a static shell, and it keeps the SDK path/version sourced
+// from the installed package instead of hand-copied.
+//
+// VERCEL OUTPUT ONLY. src/client-mobile/index.html is shared by three targets;
+// the Cloudflare build and the Node server serve no /_vercel/* routes, so a tag
+// there would 404 on every boot. OW_ANALYTICS=off skips it (local dev builds,
+// where /_vercel/insights/script.js does not exist either).
+const ANALYTICS_SRC = '/_vercel/insights/script.js';
+
+function analyticsTag() {
+  const require = createRequire(import.meta.url);
+  let version;
+  try {
+    version = require('@vercel/analytics/package.json').version;
+  } catch (_) {
+    fail(
+      '@vercel/analytics is not installed — run `npm install` in ' +
+        'src/deployments/vercel, or build with OW_ANALYTICS=off.'
+    );
+  }
+  return (
+    `<script defer src="${ANALYTICS_SRC}"` +
+    ` data-sdkn="@vercel/analytics" data-sdkv="${version}"></script>`
+  );
 }
 
 function copyDir(src, dest) {
@@ -197,6 +231,20 @@ async function build() {
       ';</script>',
     'OW_BACKEND_INJECT'
   );
+
+  // ── Vercel Web Analytics (see analyticsTag() above for why this is emitted
+  // here rather than by calling inject()) ─────────────────────────────────
+  if (process.env.OW_ANALYTICS === 'off') {
+    console.log('  analytics: skipped (OW_ANALYTICS=off)');
+  } else {
+    if (!html.includes('</head>')) {
+      fail('</head> not found in index.html — refusing to ship a build without analytics.');
+    }
+    const tag = analyticsTag();
+    html = html.replace('</head>', '  ' + tag + '\n</head>');
+    console.log('  analytics: injected ' + ANALYTICS_SRC);
+  }
+
   fs.writeFileSync(indexPath, html);
 
   // ── service worker at the root (scope covers the whole app) ──────────────

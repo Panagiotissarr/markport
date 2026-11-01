@@ -159,6 +159,25 @@ password set in one client unlocks the vault in the other), then **Sync now**
 (`neon-sync-v*`). See its README for install options (including BRAT on
 mobile).
 
+## Analytics
+
+The build injects Vercel Web Analytics into the **built** `index.html` only —
+a deferred `/_vercel/insights/script.js` plus the `data-sdkn`/`data-sdkv`
+attributes the SDK's own `inject()` sets. `src/client-mobile/index.html` is
+shared with the Cloudflare and Node targets, which have no `/_vercel/*`
+routes, so nothing is added there; `sw.js` bypasses `/_vercel/` so a cached SDK
+can never outlive the deploy that changed it.
+
+```bash
+OW_ANALYTICS=off npm run build   # local/dev build: no tag, no 404s
+```
+
+Web Analytics must also be **enabled for the project** in the Vercel dashboard
+(Settings → Analytics) or the script 404s — the deployment already carries a
+`webAnalytics` id, so this is a checkbox, not a code change. `test/build-assets.test.js`
+asserts the tag is present, inside `<head>`, appearing once, and absent under
+`OW_ANALYTICS=off`.
+
 ## Security
 
 The sync surface is reviewed in [SECURITY.md](SECURITY.md) — threat model,

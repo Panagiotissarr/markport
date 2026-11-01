@@ -238,6 +238,17 @@ deployment is refused.
 Point not to miss when self-hosting: **the Node server has no authentication.** Put it behind a
 reverse proxy or tunnel; never expose it directly to the internet.
 
+### Privacy and page-view analytics
+
+Vault content stays where it already was: browser or folder storage on the Node server, OPFS in
+the client-only deployments. The **Vercel** build also loads
+[Vercel Web Analytics](https://vercel.com/docs/analytics) — a cookieless page-view counter served
+from your own domain (`/_vercel/insights/script.js`). It sees the URL you visited, not your notes:
+no vault content, no file names, no passwords, and nothing is sent anywhere in the Cloudflare or
+Node builds, which have no such endpoint.
+
+Building locally? `OW_ANALYTICS=off npm run build` in `src/deployments/vercel` leaves the tag out.
+
 ---
 
 ## Compatibility
