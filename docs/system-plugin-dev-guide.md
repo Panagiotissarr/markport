@@ -23,7 +23,7 @@ and without leaving anything behind in their vault.
 | | Community plugin | System plugin |
 |---|---|---|
 | Where it lives | `<vault>/.obsidian/plugins/<id>/` | `src/plugins/<id>/` |
-| Who installs it | the user, through the UI or by hand | a Markport developer, by committing it |
+| Who installs it | the user, through the UI or by hand | an Oryn developer, by committing it |
 | `community-plugins.json` | the user controls it | always enabled; re-injected at load |
 | `data.json` settings | per vault, in the vault | per vault, in the vault - a system plugin is not "global" |
 | Bundling | up to you: a build (TS/Rollup) or plain JS | no build chain - plain CommonJS JS |
@@ -39,11 +39,11 @@ The directory name **must** equal the `id` you declare in `manifest.json`. The s
 tolerate a mismatch.
 
 ```bash
-mkdir src/plugins/markport-<name>
-cd src/plugins/markport-<name>
+mkdir src/plugins/oryn-<name>
+cd src/plugins/oryn-<name>
 ```
 
-**Naming:** prefix new plugins with `markport-`, so their origin is obvious and they cannot
+**Naming:** prefix new plugins with `oryn-`, so their origin is obvious and they cannot
 collide with a community plugin. The one existing system plugin is still called
 `obsidian-web-layout`; that id is deliberately frozen, because it is also the directory name
 inside every existing vault's `.obsidian/plugins/`.
@@ -54,12 +54,12 @@ A standard Obsidian manifest. The `id` has to match the directory name.
 
 ```json
 {
-  "id": "markport-<name>",
-  "name": "Markport - <Human Name>",
+  "id": "oryn-<name>",
+  "name": "Oryn - <Human Name>",
   "version": "0.1.0",
   "minAppVersion": "1.0.0",
   "description": "Short description.",
-  "author": "Markport",
+  "author": "Oryn",
   "isDesktopOnly": false
 }
 ```
@@ -81,22 +81,22 @@ const obsidian = require('obsidian');
 
 class MyPlugin extends obsidian.Plugin {
   async onload() {
-    // Check that we are running inside Markport before touching anything
+    // Check that we are running inside Oryn before touching anything
     // that depends on our globals. On real Obsidian, __owPlatform does not
     // exist, and the plugin should stay a no-op there.
     //
     // Caveat: __owPlatform is published at RUNTIME, by intercepting
     // Object.defineProperty as Obsidian's own bundle loads - it is not
-    // injected at build time. So it can also be undefined ON Markport
+    // injected at build time. So it can also be undefined ON Oryn
     // itself, for a few seconds, while app.js is still downloading. Do not
     // gate anything that must run before the vault is up on this check alone.
     if (typeof window.__owPlatform === 'undefined') {
-      console.log('[markport-<name>] not running on Markport, skipping');
+      console.log('[oryn-<name>] not running on Oryn, skipping');
       return;
     }
 
     this.addRibbonIcon('settings', 'My Plugin', () => {
-      new obsidian.Notice('Hello from Markport');
+      new obsidian.Notice('Hello from Oryn');
     });
 
     this.addCommand({
@@ -118,7 +118,7 @@ module.exports = MyPlugin;
 
 - `require('obsidian')` - Obsidian's own plugin API (`Plugin`, `Notice`, `Modal`, `Setting`,
   `TFile`, …). This is Obsidian's `require`, not Node's.
-- `window.__owPlatform` - present only on Markport, so it works as feature detection. See the
+- `window.__owPlatform` - present only on Oryn, so it works as feature detection. See the
   caveat in the code above: it appears at runtime, not at load, so it can be briefly undefined.
 - `window.app` - the application, available after `onload`.
 - `localStorage` - ordinary. The convention is to namespace keys as
@@ -153,18 +153,18 @@ The server listens on port 3000 by default (`PORT` overrides it).
 ```bash
 # 1. the server sees the plugin
 curl -s "http://localhost:3000/api/fs/readdir?path=.obsidian/plugins" | jq '.[].name'
-# should include "markport-<name>"
+# should include "oryn-<name>"
 
 # 2. the manifest is served
-curl -s "http://localhost:3000/api/fs/read?path=.obsidian/plugins/markport-<name>/manifest.json"
+curl -s "http://localhost:3000/api/fs/read?path=.obsidian/plugins/oryn-<name>/manifest.json"
 
 # 3. the id appears in the virtual community-plugins.json
 curl -s "http://localhost:3000/api/fs/read?path=.obsidian/community-plugins.json"
-# should return an array containing "markport-<name>"
+# should return an array containing "oryn-<name>"
 
 # 4. in the browser, after a reload
-#    app.plugins.plugins['markport-<name>']    -> an instance of your class
-#    app.plugins.manifests['markport-<name>']  -> the manifest
+#    app.plugins.plugins['oryn-<name>']    -> an instance of your class
+#    app.plugins.manifests['oryn-<name>']  -> the manifest
 ```
 
 ---
@@ -172,10 +172,10 @@ curl -s "http://localhost:3000/api/fs/read?path=.obsidian/community-plugins.json
 ## The iterative loop
 
 ```bash
-# 1. edit src/plugins/markport-<name>/main.js
+# 1. edit src/plugins/oryn-<name>/main.js
 # 2. in browser DevTools:
-app.plugins.disablePlugin('markport-<name>');
-app.plugins.enablePlugin('markport-<name>');
+app.plugins.disablePlugin('oryn-<name>');
+app.plugins.enablePlugin('oryn-<name>');
 # or just reload the page.
 ```
 
@@ -204,7 +204,7 @@ Read it before writing a new one.
 **Not implemented.** There is no `process.env.SYSTEM_PLUGINS` in the code today.
 
 ```bash
-SYSTEM_PLUGINS=markport-layout,obsidian-livesync node index.js
+SYSTEM_PLUGINS=oryn-layout,obsidian-livesync node index.js
 ```
 
 The idea is to limit which ids from `src/plugins/` get injected - useful for a deployment that

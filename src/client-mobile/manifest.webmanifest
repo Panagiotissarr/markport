@@ -1,7 +1,7 @@
 {
-  "name": "Markport",
-  "short_name": "Markport",
-  "description": "Obsidian running in your browser. Notes are stored locally on your device (OPFS), work offline, and never touch a server.",
+  "name": "Oryn",
+  "short_name": "Oryn",
+  "description": "Obsidian in your browser, with syncing. Notes are stored locally on your device (OPFS), work offline, and never touch a server.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

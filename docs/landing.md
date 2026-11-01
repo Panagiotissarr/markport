@@ -1,10 +1,10 @@
 ---
-title: "Markport - Obsidian, running in your browser"
+title: "Oryn - Obsidian, running in your browser"
 description: "Obsidian's own renderer running in a standard browser. No Electron, no install, no server-side vault."
 ---
 
 <header class="wrap">
-  <p class="wordmark">Markport</p>
+  <p class="wordmark">Oryn</p>
   <h1>Obsidian, running in <span>your browser</span></h1>
   <p class="tagline">
     Obsidian's own renderer - the real one, byte-for-byte unmodified - with every
@@ -17,7 +17,7 @@ description: "Obsidian's own renderer running in a standard browser. No Electron
     </a>
   </div>
   <p class="disclaimer">
-    Markport is an independent project. It is not made by, affiliated with, or endorsed by
+    Oryn is an independent project. It is not made by, affiliated with, or endorsed by
     Obsidian. <strong>There is no public instance</strong> - see below for why.
   </p>
 </header>
@@ -30,7 +30,7 @@ below.
 
 ### A real folder on your computer
 
-Point Markport at any directory and it reads and writes that directory directly, through the
+Point Oryn at any directory and it reads and writes that directory directly, through the
 browser's [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/File_System_API).
 Your notes stay ordinary Markdown files on your disk - open them in any other editor, back them
 up, sync them with whatever you already use. Nothing is copied into the browser, and the browser
@@ -80,7 +80,7 @@ instead of editing its source. *This repository does not contain or redistribute
 
 ## Obsidian 1.13
 
-**Obsidian 1.13 and newer.** Markport is pinned to 1.12.7. Starting with 1.13, Obsidian asks its
+**Obsidian 1.13 and newer.** Oryn is pinned to 1.12.7. Starting with 1.13, Obsidian asks its
 host environment for a `terms` field carrying a verbatim acknowledgement before it initialises.
 The acknowledgement sits on both sides - one supplies it, the other compares against its own copy
 *(illustrative, not exact)*.

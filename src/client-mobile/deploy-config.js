@@ -43,7 +43,7 @@
     },
     layout: { default: 'auto', threshold: 900 },
     demoVault: { enabled: false, id: '0000demo0000demo' },
-    branding: { name: 'Markport', themeColor: '#1e1e1e' }
+    branding: { name: 'Oryn', themeColor: '#1e1e1e' }
   };
 
   function isPlainObject(v) {

@@ -14,7 +14,7 @@
 
 תוסף Obsidian רגיל ש**נשמר ב-repo ב-`src/plugins/<id>/`** במקום בכל vault של משתמש. השרת חושף אותו כאילו הוא חלק מ-`.obsidian/plugins/<id>/` של כל vault שנפתח, ו-`.obsidian/community-plugins.json` נראה לאפליקציה כאילו ה-id כבר רשום שם.
 
-יתרון: הפלאגין זמין מהרגע הראשון לכל משתמש שפותח את Markport, בלי שצריך להתקין שום דבר ובלי שהvault שלו מתלכלך.
+יתרון: הפלאגין זמין מהרגע הראשון לכל משתמש שפותח את Oryn, בלי שצריך להתקין שום דבר ובלי שהvault שלו מתלכלך.
 
 ---
 
@@ -23,7 +23,7 @@
 | | Community plugin | System plugin |
 |---|---|---|
 | איפה חי | `<vault>/.obsidian/plugins/<id>/` | `src/plugins/<id>/` |
-| מי מתקין | המשתמש (דרך ה-UI / manually) | מפתח של Markport (commit לריפו) |
+| מי מתקין | המשתמש (דרך ה-UI / manually) | מפתח של Oryn (commit לריפו) |
 | `community-plugins.json` enable | המשתמש שולט | system plugins תמיד "enabled" (re-injected at load) |
 | `data.json` settings | per-vault, ב-vault | per-vault, ב-vault (system plugin אינו "global") |
 | Bundling | חוסם - או build (TS/Rollup) או JS פשוט | אין build chain - JS פשוט, CommonJS |
@@ -38,11 +38,11 @@
 שם התיקייה **חייב** להיות זהה ל-`id` שתצהיר ב-`manifest.json`. ה-server לא מתפשר על זה.
 
 ```bash
-mkdir src/plugins/markport-<name>
-cd src/plugins/markport-<name>
+mkdir src/plugins/oryn-<name>
+cd src/plugins/oryn-<name>
 ```
 
-**Naming convention:** התחל ב-`markport-` כדי שיהיה ברור מאיפה הוא בא ושלא יתנגש עם תוספי
+**Naming convention:** התחל ב-`oryn-` כדי שיהיה ברור מאיפה הוא בא ושלא יתנגש עם תוספי
 community. ה-system plugin היחיד שקיים עדיין נקרא `obsidian-web-layout`; ה-id הזה מוקפא
 בכוונה, כי הוא גם שם התיקייה בתוך `.obsidian/plugins/` של כל כספת קיימת.
 
@@ -52,12 +52,12 @@ community. ה-system plugin היחיד שקיים עדיין נקרא `obsidian-
 
 ```json
 {
-  "id": "markport-<name>",
-  "name": "Markport - <Human Name>",
+  "id": "oryn-<name>",
+  "name": "Oryn - <Human Name>",
   "version": "0.1.0",
   "minAppVersion": "1.0.0",
   "description": "Short description.",
-  "author": "Markport",
+  "author": "Oryn",
   "isDesktopOnly": false
 }
 ```
@@ -77,23 +77,23 @@ const obsidian = require('obsidian');
 
 class MyPlugin extends obsidian.Plugin {
   async onload() {
-    // Detect that we are running inside Markport before doing anything
+    // Detect that we are running inside Oryn before doing anything
     // that depends on our globals. On real Obsidian (desktop/mobile app),
     // __owPlatform doesn't exist - keep the plugin a no-op there.
     // Caveat: __owPlatform
     // is now set at RUNTIME by intercepting Object.defineProperty as
     // Obsidian's own bundle loads, not injected into the bundle at build
-    // time - so this check can also be undefined ON Markport itself, for
+    // time - so this check can also be undefined ON Oryn itself, for
     // a few seconds, while app.js is still downloading. Don't gate anything
     // that must run before the vault is up on this check alone.
     if (typeof window.__owPlatform === 'undefined') {
-      console.log('[markport-<name>] not running on Markport, skipping');
+      console.log('[oryn-<name>] not running on Oryn, skipping');
       return;
     }
 
     // ribbon icon, commands, settings, etc.
     this.addRibbonIcon('settings', 'My Plugin', () => {
-      new obsidian.Notice('Hello from Markport');
+      new obsidian.Notice('Hello from Oryn');
     });
 
     this.addCommand({
@@ -113,10 +113,10 @@ module.exports = MyPlugin;
 
 **מה קיים בסביבה?**
 - `require('obsidian')` - ה-API הרגיל של Obsidian (`Plugin`, `Notice`, `Modal`, `Setting`, `TFile`, ...). זמין דרך ה-runtime - אין `require` של Node.js, יש את ה-`require` של Obsidian.
-- `window.__owPlatform` - קיים רק על Markport. השתמש כ-feature detection.
+- `window.__owPlatform` - קיים רק על Oryn. השתמש כ-feature detection.
   **הערה**: הוא נחשף ב**זמן ריצה** (יירוט `Object.defineProperty`, לא הזרקה בזמן build),
   ולכן הוא יכול להיות `undefined`
-  זמנית **גם על Markport עצמו**, למשך כמה שניות, בזמן ש-`app.js` עדיין נטען. אל תבסס
+  זמנית **גם על Oryn עצמו**, למשך כמה שניות, בזמן ש-`app.js` עדיין נטען. אל תבסס
   עליו לוגיקה שחייבת לרוץ לפני עליית הכספת.
 - `window.app` - האפליקציה (זמין אחרי `onload`).
 - `localStorage` - נורמלי. שמירת state ב-`obsidian-web:<plugin-id>:*` keys היא הconvention - הקידומת מוקפאת מאותה
@@ -142,18 +142,18 @@ module.exports = MyPlugin;
 ```bash
 # 1. בדוק שהמשרת מזהה את הפלאגין:
 curl -s http://localhost:3000/api/fs/readdir?path=.obsidian/plugins | jq '.[].name'
-# צריך לכלול "markport-<name>"
+# צריך לכלול "oryn-<name>"
 
 # 2. בדוק שה-manifest מוגש:
-curl -s "http://localhost:3000/api/fs/read?path=.obsidian/plugins/markport-<name>/manifest.json"
+curl -s "http://localhost:3000/api/fs/read?path=.obsidian/plugins/oryn-<name>/manifest.json"
 
 # 3. בדוק שה-id מופיע ב-community-plugins.json הוירטואלי:
 curl -s "http://localhost:3000/api/fs/read?path=.obsidian/community-plugins.json"
-# צריך להחזיר array שמכיל "markport-<name>"
+# צריך להחזיר array שמכיל "oryn-<name>"
 
 # 4. בדפדפן (אחרי reload):
-#    app.plugins.plugins['markport-<name>']      → instance של המחלקה
-#    app.plugins.manifests['markport-<name>']    → ה-manifest
+#    app.plugins.plugins['oryn-<name>']      → instance של המחלקה
+#    app.plugins.manifests['oryn-<name>']    → ה-manifest
 ```
 
 ---
@@ -163,10 +163,10 @@ curl -s "http://localhost:3000/api/fs/read?path=.obsidian/community-plugins.json
 לולאת פיתוח טיפוסית:
 
 ```bash
-# 1. ערוך src/plugins/markport-<name>/main.js
+# 1. ערוך src/plugins/oryn-<name>/main.js
 # 2. ב-browser DevTools:
-app.plugins.disablePlugin('markport-<name>');
-app.plugins.enablePlugin('markport-<name>');
+app.plugins.disablePlugin('oryn-<name>');
+app.plugins.enablePlugin('oryn-<name>');
 # או פשוט reload לדפדפן.
 ```
 
@@ -193,7 +193,7 @@ app.plugins.enablePlugin('markport-<name>');
 תוכנית עתידית, **טרם מומשה** ב-`index.js` של השרת (אין `process.env.SYSTEM_PLUGINS` בקוד כיום):
 
 ```bash
-SYSTEM_PLUGINS=markport-layout,obsidian-livesync node index.js
+SYSTEM_PLUGINS=oryn-layout,obsidian-livesync node index.js
 ```
 
 שיגביל אילו ids מ-`src/plugins/` יוזרקו. שימושי לפריסות שרוצות לצמצם אילו system plugins מוזרקים בכלל (למשל: פריסה שלא רוצה את קבצי LiveSync בפועל, לא רק disabled). אם תוסיף system plugin שמתאים רק לחלק מהפריסות, תיעד את זה ב-`README.md`.

@@ -1,8 +1,8 @@
 'use strict';
 /**
- * Markport Neon Sync — Obsidian plugin (desktop AND mobile).
+ * Oryn Neon Sync — Obsidian plugin (desktop AND mobile).
  *
- * Bidirectional sync between this vault and a Markport `/sync/v1` backend
+ * Bidirectional sync between this vault and an Oryn `/sync/v1` backend
  * (the Vercel + Neon deployment, e.g. https://notes.sarris.dev). Same
  * protocol and same decision rules as the browser client
  * (src/client-mobile/sync/), so both clients can sync one server:
@@ -1295,8 +1295,8 @@ class NeonSyncSettingTab extends PluginSettingTabBase {
     el.empty();
 
     new Setting(el)
-      .setName('Markport Neon Sync' + (plugin.manifest && plugin.manifest.version ? ' v' + plugin.manifest.version : ''))
-      .setDesc('Bidirectional sync with a Markport /sync/v1 server (Neon Postgres on Vercel).');
+      .setName('Oryn Neon Sync' + (plugin.manifest && plugin.manifest.version ? ' v' + plugin.manifest.version : ''))
+      .setDesc('Bidirectional sync with an Oryn /sync/v1 server (Neon Postgres on Vercel).');
 
     // ── Claimed URL: paste the link from the browser; parseVaultUrl (same
     // rules as the web app's starter-url.js) fills the two fields below ────

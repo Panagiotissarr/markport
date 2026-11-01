@@ -110,7 +110,7 @@ const Plugin = require('../main.js');
 async function bootedPlugin(data) {
   // Plugin (the real class from main.js) extends PluginStub via the hook —
   // instantiating IT (not the base) gives us onload()/loadSettings()/etc.
-  const p = new Plugin({ vault: {} }, { id: 'markport-neon-sync', version: '0.2.4' });
+  const p = new Plugin({ vault: {} }, { id: 'markport-neon-sync', version: '0.2.5' });
   if (data) p._data = data;
   await p.onload();
   return p;
@@ -141,7 +141,7 @@ test('display() renders EVERY action on its own row — Connect, Check, Sync now
 
   const connectRow = rows.find((r) => r.buttons[0].text === 'Connect');
   assert.ok(connectRow.buttons[0].cta, 'Connect should be the CTA');
-  assert.ok(/Markport Neon Sync v0\.2\.4/.test(rendered[0].name), 'header should show the version');
+  assert.ok(/Oryn Neon Sync v0\.2\.5/.test(rendered[0].name), 'header should show the version');
 
   const pwRow = rendered.find((r) => r.name === 'Password');
   assert.equal(pwRow.texts[0].inputType, 'password', 'password field should be masked');

@@ -736,12 +736,12 @@
 
   const Device = {
     getInfo: () => Promise.resolve({
-      name: 'Markport',
+      name: 'Oryn',
       model: 'Browser',
       platform: 'android',
       operatingSystem: 'android',
       osVersion: '12',
-      manufacturer: 'Markport',
+      manufacturer: 'Oryn',
       isVirtual: true,
     }),
     // getId stays 'obsidian-web-id' on purpose: it is an IDENTIFIER, not a

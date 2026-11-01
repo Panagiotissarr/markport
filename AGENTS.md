@@ -1,4 +1,4 @@
-# AGENTS.md - Markport
+# AGENTS.md - Oryn
 
 > Conventions for anyone (human or coding agent) changing this repo.
 > Tool-neutral; `CLAUDE.md` just imports this file.
