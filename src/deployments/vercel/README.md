@@ -161,15 +161,34 @@ mobile).
 
 ## Analytics
 
-The build injects Vercel Web Analytics into the **built** `index.html` only —
-a deferred `/_vercel/insights/script.js` plus the `data-sdkn`/`data-sdkv`
-attributes the SDK's own `inject()` sets. `src/client-mobile/index.html` is
-shared with the Cloudflare and Node targets, which have no `/_vercel/*`
-routes, so nothing is added there; `sw.js` bypasses `/_vercel/` so a cached SDK
-can never outlive the deploy that changed it.
+The build writes a handle into the **built** `index.html`, and `boot.js` loads
+the SDK from it:
+
+```js
+window.__owAnalytics = {"src":"/_vercel/insights/script.js",
+                        "sdkn":"@vercel/analytics","sdkv":"2.0.1"};
+```
+
+Those are the attributes `inject()` sets on the tag it creates, read by the SDK
+off `document.currentScript`, and the version comes from the installed package.
+
+**Why not a `<script defer>` in `<head>`** — that is how this started, and it
+never fired. `boot.js` is a synchronous script at the end of `<body>` and the
+entry routes (`/`, `/mobile`) call `location.replace()` to pick a vault.
+Starting a navigation while the parser is still running cancels every deferred
+script in the document, so the tag was discarded on exactly the loads a visitor
+makes. Loading from `boot.js` after the route decision means the request only
+happens on a page that is going to stay. Sanity check in a console on any
+deployed page: `window.__owAnalytics` (the handle) and `window.va` (defined by
+the SDK once it runs).
+
+Vercel only: `src/client-mobile/index.html` is shared with the Cloudflare and
+Node targets, which have no `/_vercel/*` route, so the marker stays an inert
+comment there and `boot.js` returns immediately. `sw.js` bypasses `/_vercel/`
+so a cached SDK can never outlive the deploy that changed it.
 
 ```bash
-OW_ANALYTICS=off npm run build   # local/dev build: no tag, no 404s
+OW_ANALYTICS=off npm run build   # local/dev build: no handle, no 404s
 ```
 
 Vercel **auto-enables** Web Analytics for the project when it detects the SDK,
@@ -182,10 +201,11 @@ that predates the enable, produces no data and (once enabled) a `404` on
 The build runs in **GitHub Actions**, not on Vercel's builders — `vendor/` is
 Obsidian's bundle and is gitignored, so the workflow downloads it, builds
 `public/`, and `vercel deploy` ships that directory as-is. The
-`analytics: <tag>` line in the artifact-verification step is therefore the
+`analytics: <handle>` line in the artifact-verification step is therefore the
 authoritative record of what the browser receives; the Vercel build log shows
-only packaging. `test/build-assets.test.js` asserts the tag is present, inside
-`<head>`, appearing once, and absent under `OW_ANALYTICS=off`.
+only packaging. `test/build-assets.test.js` asserts the handle is present,
+correctly shaped, positioned before the `boot.js` tag, and absent under
+`OW_ANALYTICS=off`.
 
 ## Security
 

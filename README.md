@@ -243,9 +243,10 @@ reverse proxy or tunnel; never expose it directly to the internet.
 Vault content stays where it already was: browser or folder storage on the Node server, OPFS in
 the client-only deployments. The Vercel deployment also loads
 [Vercel Web Analytics](https://vercel.com/docs/analytics) — a cookieless page-view counter served
-from your own domain (`/_vercel/insights/script.js`). It sees the URL you visited, not your notes:
-no vault content, no file names, no passwords, and nothing is sent anywhere in the Cloudflare or
-Node builds, which have no such endpoint.
+from your own domain (`/_vercel/insights/script.js`), loaded by `boot.js` once the vault route is
+settled. It sees the URL you visited, not your notes: no vault content, no file names, no
+passwords, and nothing is sent anywhere in the Cloudflare or Node builds, which have no such
+endpoint.
 
 Building locally? `OW_ANALYTICS=off npm run build` in `src/deployments/vercel` leaves the tag out.
 

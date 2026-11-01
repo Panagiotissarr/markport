@@ -175,6 +175,16 @@
   <!-- OW_CONFIG_INJECT -->
   <script src="/client-mobile/deploy-config.js?v=1"></script>
 
+  <!-- 3d.1 Vercel Web Analytics handle (window.__owAnalytics) — VERCEL ONLY.
+       Filled by src/deployments/vercel/scripts/build-assets.js; boot.js reads
+       it and injects the SDK once the route has settled. Cloudflare and the
+       Node server leave this as an inert comment: they serve no /_vercel/*
+       route, and boot.js treats a missing flag as "no analytics".
+       Not a <script defer> in <head>: boot.js runs synchronously and calls
+       location.replace() on the entry routes, and starting a navigation
+       cancels deferred scripts — a head tag never fired there. -->
+  <!-- OW_ANALYTICS_INJECT -->
+
   <!-- 3e. Platform bridge (docs/plans/runtime-platform-descriptors.md §2/§3) —
        wraps Object.defineProperty to capture Obsidian's Platform object at
        runtime. This, plus docs/plans/zero-patches.md, removed every build-time

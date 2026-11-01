@@ -166,12 +166,14 @@ jobs:
           # Web Analytics: this job is the build. Vercel only packages the
           # uploaded public/, so this log is the only place the injected tag
           # can be observed before (or instead of) a browser.
+          # The handle boot.js loads from — not a <script> tag: a deferred tag
+          # is cancelled when boot.js navigates during parsing.
           if [ "${OW_ANALYTICS:-}" = "off" ]; then
             echo "  analytics: off (OW_ANALYTICS=off)"
-          elif grep -q '/_vercel/insights/script.js' "$public/index.html"; then
-            echo "  analytics: $(grep -o '<script[^>]*/_vercel/insights/script.js[^>]*>' "$public/index.html")"
+          elif grep -q 'window.__owAnalytics=' "$public/index.html"; then
+            echo "  analytics: $(grep -o 'window.__owAnalytics={[^}]*}' "$public/index.html")"
           else
-            echo "::error::$public/index.html has no /_vercel/insights/script.js tag" >&2
+            echo "::error::$public/index.html has no window.__owAnalytics handle" >&2
             exit 1
           fi
 
