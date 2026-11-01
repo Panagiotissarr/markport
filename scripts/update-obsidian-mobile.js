@@ -94,12 +94,32 @@ async function withRetries(label, fn, attempts = 3) {
   throw lastErr;
 }
 
+// Unauthenticated api.github.com allows 60 requests/hour *per IP*, and CI
+// runners share IPs — that is enough to fail a deploy on a rate limit with no
+// code change behind it. A token lifts it to 5,000/hour.
+//
+// Scoped to api.github.com on purpose: release assets redirect to
+// objects.githubusercontent.com, and request() follows redirects by calling
+// itself with the new URL, so an unscoped header would hand the token to the
+// CDN on every download.
+function authHeaders(url) {
+  const headers = {};
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '';
+  try {
+    if (token && new URL(url).host === 'api.github.com') headers.Authorization = `Bearer ${token}`;
+  } catch (_) {
+    // not an absolute URL — never attach credentials to something unparsed
+  }
+  return headers;
+}
+
 function request(url, { json = false } = {}) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, {
       headers: {
         Accept: json ? 'application/vnd.github+json' : 'application/octet-stream',
         'User-Agent': USER_AGENT,
+        ...authHeaders(url),
       },
     }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
