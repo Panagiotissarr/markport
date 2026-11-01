@@ -15,6 +15,8 @@ backend they follow you between desktop, mobile, and a real Obsidian vault.
 > **Independent project.** Oryn is unaffiliated with any other product, company or AI project
 > that happens to use the same or a similar name.
 
+[View the wiki](https://github.com/Panagiotissarr/oryn/wiki)
+
 **Not a hosted service.** There is no sign-up and nothing to join: you run your own copy. Hosting
 Oryn for the public means serving Obsidian's own application code to strangers, which is
 Obsidian's call to make — so this repository doesn't ship their bundle either. The setup scripts
