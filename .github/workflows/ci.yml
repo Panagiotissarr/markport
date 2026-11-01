@@ -1,0 +1,65 @@
+# Pull-request checks.
+#
+# WHY THIS EXISTS
+# deploy.yml only triggers on `push` to main, so until now nothing tested a pull
+# request — including the Dependabot ones, which is backwards: a version bump is
+# safe to merge only because something ran it.
+#
+# WHAT IT COVERS
+# The suites that need neither vendor/obsidian-mobile/ nor a database. The
+# Vercel build itself is not run here (it needs the Obsidian bundle, which is
+# gitignored and downloaded only by the deploy workflow), but
+# test/build-assets.test.js builds a fixture tree — so the copy/inject/patch
+# pipeline is still exercised.
+#
+# WHAT IS DELIBERATELY MISSING
+# src/sync-server and src/deployments/cloudflare run under `bun test` (see their
+# package.json), and cloudflare's proxy test talks to the real network. Adding
+# them means adding oven-sh/setup-bun to this workflow — worth doing, but not
+# worth guessing at untested on the way in.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node-suites:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - src/deployments/vercel
+          - src/client-mobile
+          - src/runtime-server/server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # src/client-mobile has a package.json for its `test` script but no
+      # dependencies and no lockfile, and `npm ci` refuses to run without one.
+      - name: Install
+        working-directory: ${{ matrix.package }}
+        run: |
+          set -euo pipefail
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            echo "no package-lock.json here - nothing to install"
+          fi
+
+      - name: Test
+        working-directory: ${{ matrix.package }}
+        run: npm test

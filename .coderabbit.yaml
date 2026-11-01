@@ -1,0 +1,81 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+# CodeRabbit review configuration.
+#
+# This file only shapes reviews. The CodeRabbit GitHub App has to be installed
+# on the repository (and the check enabled) for any of it to run — the existing
+# `CodeRabbit` check on past PRs reported SKIPPED, which is a licensing/install
+# question, not a config one.
+
+language: en-US
+
+reviews:
+  # "chill" leaves style and nits alone and raises what would actually break
+  # something. Change to "assertive" if you want the noise.
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+
+  # Never review what is not ours or is generated.
+  path_filters:
+    - "!vendor/**"                          # Obsidian's own bundle — gitignored, licensed separately
+    - "!**/node_modules/**"
+    - "!src/deployments/vercel/public/**"   # build output
+    - "!site/dist/**"
+    - "!**/*.min.js"
+
+  path_instructions:
+    # The identifiers below are load-bearing: they are what existing installs
+    # and existing vaults depend on. Renaming any of them is a breaking change
+    # dressed up as cleanup.
+    - path: "src/client-mobile/**"
+      instructions: |
+        Frozen identifiers — do not suggest renaming, "modernising" or
+        extracting these: the `markport-neon-sync` plugin id, `ow-*` storage
+        keys, `__ow*` globals, and the `/sync/v1/*` routes. Vaults, settings and
+        installed plugins live behind them.
+
+        index.html is shared verbatim by three deployments (Vercel, Cloudflare,
+        the Node server) and each build substitutes `<!-- OW_*_INJECT -->`
+        markers. If a marker or the markup around it changes, the same change is
+        needed in BOTH src/deployments/vercel/scripts/build-assets.js and
+        src/deployments/cloudflare/scripts/build-assets.sh — they are twins and
+        are expected to stay in sync.
+
+        boot.js, sw.js and the injected shell scripts run before or outside the
+        app bundle; keep guards defensive (feature-detect, never assume a DOM
+        API or a config flag exists) because all three deployment targets run
+        this same shell.
+
+    - path: "src/deployments/**"
+      instructions: |
+        These handle the sync protocol and hold the operator's trust boundary.
+        Flag anything that weakens it: unbounded request bodies, trusting a
+        client-supplied size, committing or logging `DATABASE_URL` /
+        `SYNC_TOKEN`, a new endpoint that skips the vault-token check, or a
+        cache header on `/sync/v1/*` (a cached manifest makes devices sync
+        against stale state). See src/deployments/vercel/SECURITY.md.
+
+    - path: "src/neon-sync-plugin/**"
+      instructions: |
+        This is the released plugin: id and install folder stay
+        `markport-neon-sync`, and the version in manifest.json is what existing
+        installs update against. A behaviour change here needs the matching
+        rebuilt zip in release/, not just the source edit.
+
+    - path: "**/*.md"
+      instructions: |
+        Be strict about factual claims. This project has a history of
+        overstated privacy/security wording (e.g. claiming nothing ever leaves
+        the device while the Vercel deployment runs Web Analytics). Anything
+        that asserts a guarantee should be checkable against the code.
+
+chat:
+  auto_reply: true

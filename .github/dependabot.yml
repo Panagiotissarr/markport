@@ -1,0 +1,112 @@
+# Dependabot — automated dependency updates.
+#
+# One entry per package, not one per repo: this is six independent packages,
+# each with its own package-lock.json, and npm resolves them separately. A
+# single entry at "/" would find no manifest and do nothing.
+#
+# src/client-mobile is deliberately absent: it has a package.json (for the
+# `npm test` script) but no dependencies and no lockfile, so there is nothing
+# to resolve.
+#
+# The github-actions entry matters more than it looks. The deploy workflow pins
+# actions/checkout@v4, actions/setup-node@v4 and actions/cache@v4 — all of
+# which target Node 20 and are currently forced onto Node 24 by the runner
+# (GitHub already annotates every run with that deprecation). Stale action pins
+# are what quietly break a deploy.
+version: 2
+
+updates:
+  # ── The Astro marketing site ──────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /site
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Athens
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps,site)"
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # No test suite covers this package and nothing deploys it on a PR, so a
+      # major bump would merge on faith. Do those by hand.
+      - dependency-name: astro
+        update-types: [version-update:semver-major]
+
+  # ── The Vercel deployment (static shell + sync lambdas) ───────────────────
+  - package-ecosystem: npm
+    directory: /src/deployments/vercel
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Athens
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps,vercel)"
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  # ── The Cloudflare deployment (Worker + assets) ───────────────────────────
+  - package-ecosystem: npm
+    directory: /src/deployments/cloudflare
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Athens
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps,cloudflare)"
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  # ── The self-hosted Node server ───────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /src/runtime-server/server
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Athens
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps,runtime-server)"
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  # ── The legacy sync server (bun) ──────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /src/sync-server
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Athens
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps,sync-server)"
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  # ── The actions the deploy workflow runs ──────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Athens
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps,actions)"
+    groups:
+      actions:
+        update-types: [minor, patch]
